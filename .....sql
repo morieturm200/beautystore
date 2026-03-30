@@ -14,12 +14,6 @@ CREATE TABLE `Admin` (
   UNIQUE KEY `email` (`email`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
-INSERT INTO `Admin` VALUES 
-(1,'admin','admin123','Олена','Коваль','admin@beautystore.com'),
-(2,'manager','manager123','Ірина','Мельник','manager@beautystore.com'),
-(4,'admin1','admin1234','Марія','Радимська','admin1@beautystore.com'),
-(6,'boss','1234','Адмін','Beauty','admin@beauty.ua');
-
 -- 2. Таблиця клієнтів
 CREATE TABLE `customer` (
   `customer_id` int NOT NULL AUTO_INCREMENT,
@@ -37,10 +31,7 @@ CREATE TABLE `customer` (
   UNIQUE KEY `email` (`email`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
-INSERT INTO `customer` VALUES 
-(1,'anna01','pass123',1,'Анна','Шевченко','anna@gmail.com','Львів, вул. Шевченка 10','Жінка','1998-05-14','+380671111111'),
-(2,'mary22','pass123',0,'Марія','Коваленко','mary@gmail.com','Київ, вул. Хрещатик 5','Жінка','1995-03-22','+380672222222'),
-(5,'mariaradymska','$2y$10$y.kOhAlhWXs4EU4AMvVkCuQ42sjPP9jUjMcpdKjCLZJhjx5rtjHBG',0,'MARIIA','RADYMSKA','mariaradimska6@gmail.com','Не вказана','Жінка','2006-10-02','0989101356');
+
 
 -- 3. Таблиця товарів
 CREATE TABLE `product` (
@@ -64,12 +55,6 @@ CREATE TABLE `product` (
   PRIMARY KEY (`product_id`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
-INSERT INTO `product` VALUES 
-(1,'Матова помада Ruby',420.00,NULL,0,'Макіяж','Помади','Maybelline','Матова помада насиченого червоного кольору',50,'Червоний',0.20,'12 місяців','NEW',1000.00,0,''),
-(2,'Зволожуючий крем для обличчя',780.00,NULL,0,'Догляд за шкірою','Креми для обличчя','La Roche Posay','Крем для інтенсивного зволоження сухої шкіри',40,'Білий',0.30,'12 місяців','HOT',NULL,0,''),
-(3,'Туш для обʼєму вій',390.00,NULL,0,'Макіяж','Туш для вій','L’Oreal','Туш для створення обʼємних і довгих вій',60,'Чорний',0.15,'12 місяців','SALE',NULL,0,''),
-(46,'Tom Ford Lost Cherry',12500.00,12500.00,0,'Парфумерія','Унісекс','Tom Ford','Елітний аромат з нотами вишні та мигдалю',15,'Вишневий',0.35,'Оригінал','TOP',NULL,0,'');
-
 -- 4. Таблиця зображень
 CREATE TABLE `Images` (
   `image_id` int NOT NULL AUTO_INCREMENT,
@@ -80,11 +65,6 @@ CREATE TABLE `Images` (
   KEY `product_id` (`product_id`),
   CONSTRAINT `Images_ibfk_1` FOREIGN KEY (`product_id`) REFERENCES `product` (`product_id`) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
-
-INSERT INTO `Images` VALUES 
-(106,46,'https://www.brocard.ua/media/catalog/product/tom-ford-lost-cherry.webp',1),
-(107,1,'https://cdn.notinoimg.com/superstay-vinyl-ink.jpg',1),
-(121,2,'https://pwa-api.eva.ua/img/573764_1.jpg',1);
 
 -- 5. Таблиця кошика
 CREATE TABLE `Cart` (
