@@ -14,13 +14,13 @@ $conn->set_charset("utf8mb4");
 $product_id = isset($_GET['id']) ? intval($_GET['id']) : 0;
 
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['submit_review'])) {
-    if (isset($_SESSION['customer_id'])) { 
-        $customer_id = $_SESSION['customer_id'];
+    if (isset($_SESSION['user_id'])) { 
+        $user_id = $_SESSION['user_id'];
         $rating = intval($_POST['rating']);
         $comment = trim($_POST['comment']);
         
-        $stmt_rev = $conn->prepare("INSERT INTO Reviews (product_id, customer_id, rating, comment, review_date) VALUES (?, ?, ?, ?, NOW())");
-        $stmt_rev->bind_param("iiis", $product_id, $customer_id, $rating, $comment);
+        $stmt_rev = $conn->prepare("INSERT INTO Reviews (product_id, user_id, rating, comment, review_date) VALUES (?, ?, ?, ?, NOW())");
+        $stmt_rev->bind_param("iiis", $product_id, $user_id, $rating, $comment);
         
         if($stmt_rev->execute()) {
             header("Location: product_details.php?id=$product_id&status=success#reviews");
@@ -31,10 +31,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['submit_review'])) {
     }
 }
 
-
-$sql_product = "SELECT p.*, i.image_url 
+$sql_product = "SELECT p.*, i.image_url, c.name as category_name 
                 FROM product p 
                 LEFT JOIN Images i ON p.product_id = i.product_id AND i.is_primary = 1 
+                LEFT JOIN categories c ON p.category_id = c.category_id 
                 WHERE p.product_id = $product_id";
 
 $res_product = $conn->query($sql_product);
@@ -45,6 +45,16 @@ if (!$product) {
     exit; 
 }
 
+if (!isset($_SESSION['recently_viewed'])) {
+    $_SESSION['recently_viewed'] = [];
+}
+if (($key = array_search($product_id, $_SESSION['recently_viewed'])) !== false) {
+    unset($_SESSION['recently_viewed'][$key]); 
+}
+array_unshift($_SESSION['recently_viewed'], $product_id); 
+if (count($_SESSION['recently_viewed']) > 6) {
+    array_pop($_SESSION['recently_viewed']); 
+}
 
 $sql_all_imgs = "SELECT image_url FROM Images WHERE product_id = $product_id ORDER BY is_primary DESC";
 $res_all_imgs = $conn->query($sql_all_imgs);
@@ -58,20 +68,28 @@ if(empty($gallery_images)) {
 
 $total_items = isset($_SESSION['cart']) ? array_sum($_SESSION['cart']) : 0; 
 
-
-if (isset($_SESSION['customer_id'])) {
-    $c_id = $_SESSION['customer_id'];
-    $check_fav = $conn->query("SELECT * FROM Wishlist WHERE customer_id = $c_id AND product_id = $product_id");
+$user_wishlist_ids = [];
+if (isset($_SESSION['user_id'])) {
+    $c_id = $_SESSION['user_id'];
+    $check_fav = $conn->query("SELECT * FROM Wishlist WHERE user_id = $c_id AND product_id = $product_id");
     $is_fav_status = ($check_fav && $check_fav->num_rows > 0);
-    $wish_res = $conn->query("SELECT COUNT(*) as cnt FROM Wishlist WHERE customer_id = $c_id");
-    $wishlist_count = ($wish_res) ? $wish_res->fetch_assoc()['cnt'] : 0;
+    
+    $wish_res = $conn->query("SELECT product_id FROM Wishlist WHERE user_id = $c_id");
+    if ($wish_res) {
+        $wishlist_count = $wish_res->num_rows;
+        while($w_row = $wish_res->fetch_assoc()) {
+            $user_wishlist_ids[] = $w_row['product_id'];
+        }
+    } else {
+        $wishlist_count = 0;
+    }
 } else {
     $is_fav_status = false;
     $wishlist_count = 0; 
 }
 
 
-$sql_chars = "SELECT * FROM characteristics WHERE product_id = $product_id ORDER BY sort_order ASC, characteristic_id ASC";
+$sql_chars = "SELECT * FROM characteristics WHERE product_id = $product_id ORDER BY characteristic_id ASC";
 $res_chars = $conn->query($sql_chars);
 $grouped_specs = [];
 $long_description = $product['description']; 
@@ -85,21 +103,66 @@ while($char = $res_chars->fetch_assoc()) {
     }
 }
 
-
-$cat = $conn->real_escape_string($product['category']);
-$brand = $conn->real_escape_string($product['manufacturer']);
+$cat_id = intval($product['category_id']);
+$brand = $conn->real_escape_string($product['manufacturer'] ?? '');
 $sql_related = "SELECT p.*, (SELECT image_url FROM Images WHERE product_id = p.product_id AND is_primary = 1 LIMIT 1) as img 
                 FROM product p 
-                WHERE (p.category = '$cat' OR p.manufacturer = '$brand') 
+                WHERE (p.category_id = $cat_id OR p.manufacturer = '$brand') 
                 AND p.product_id != $product_id 
                 LIMIT 4";
 $related_res = $conn->query($sql_related);
 
-
-$stmt_r = $conn->prepare("SELECT r.*, c.first_name FROM Reviews r JOIN customer c ON r.customer_id = c.customer_id WHERE r.product_id = ? ORDER BY r.review_date DESC");
+$stmt_r = $conn->prepare("SELECT r.*, u.first_name FROM Reviews r JOIN users u ON r.user_id = u.user_id WHERE r.product_id = ? ORDER BY r.review_date DESC");
 $stmt_r->bind_param("i", $product_id);
 $stmt_r->execute();
 $reviews = $stmt_r->get_result();
+
+$cart_products = [];
+if (isset($_SESSION['user_id'])) {
+    $u_id = intval($_SESSION['user_id']);
+
+    $sql_cart_sug = "SELECT p.*, (SELECT image_url FROM Images WHERE product_id = p.product_id AND is_primary = 1 LIMIT 1) as img 
+                     FROM Order_Details od
+                     JOIN orders o ON od.order_id = o.order_id
+                     JOIN product p ON od.product_id = p.product_id
+                     WHERE o.user_id = $u_id AND od.status = 'cart' AND o.invoice_no IS NULL AND p.product_id != $product_id LIMIT 4";
+    $res_cart_sug = $conn->query($sql_cart_sug);
+    if ($res_cart_sug) {
+        while($row = $res_cart_sug->fetch_assoc()) {
+            $cart_products[] = $row;
+        }
+    }
+} else {
+    if (!empty($_SESSION['cart'])) {
+        $cart_ids = array_diff(array_keys($_SESSION['cart']), [$product_id]);
+        if (!empty($cart_ids)) {
+            $c_ids_str = implode(',', array_map('intval', $cart_ids));
+            $sql_cart_sug = "SELECT p.*, (SELECT image_url FROM Images WHERE product_id = p.product_id AND is_primary = 1 LIMIT 1) as img 
+                             FROM product p WHERE p.product_id IN ($c_ids_str) LIMIT 4";
+            $res_cart_sug = $conn->query($sql_cart_sug);
+            if ($res_cart_sug) {
+                while($row = $res_cart_sug->fetch_assoc()) {
+                    $cart_products[] = $row;
+                }
+            }
+        }
+    }
+}
+
+$recent_products = [];
+$recent_ids = array_diff($_SESSION['recently_viewed'], [$product_id]);
+if (!empty($recent_ids)) {
+    $ids_str = implode(',', array_map('intval', $recent_ids));
+    $sql_recent = "SELECT p.*, (SELECT image_url FROM Images WHERE product_id = p.product_id AND is_primary = 1 LIMIT 1) as img 
+                   FROM product p WHERE p.product_id IN ($ids_str) ORDER BY FIELD(product_id, $ids_str) LIMIT 4";
+    $res_recent = $conn->query($sql_recent);
+    if ($res_recent) {
+        while($row = $res_recent->fetch_assoc()) {
+            $recent_products[] = $row;
+        }
+    }
+}
+
 ?>
 
 <?php include 'includes/header.php'; ?>
@@ -152,39 +215,57 @@ $reviews = $stmt_r->get_result();
         .stars { color: var(--accent); font-size: 14px; }
         .review-text { color: #555; font-size: 15px; line-height: 1.7; font-style: italic; }
 
-        /* СТИЛІ ВІДПОВІДІ АДМІНА */
-        .admin-answer-box {
-            margin-top: 25px;
-            margin-left: 40px;
-            padding: 25px;
-            background: #f8f8f8;
-            border-left: 3px solid var(--accent);
-            position: relative;
-        }
-        .admin-tag {
-            position: absolute;
-            top: -12px;
-            left: 15px;
-            background: var(--primary);
-            color: white;
-            font-size: 9px;
-            font-weight: 700;
-            padding: 4px 12px;
-            text-transform: uppercase;
-            letter-spacing: 1.5px;
-        }
-        .admin-text {
-            font-size: 14px;
-            color: #444;
-            line-height: 1.6;
-            margin: 0;
-        }
+        .admin-answer-box { margin-top: 25px; margin-left: 40px; padding: 25px; background: #f8f8f8; border-left: 3px solid var(--accent); position: relative; }
+        .admin-tag { position: absolute; top: -12px; left: 15px; background: var(--primary); color: white; font-size: 9px; font-weight: 700; padding: 4px 12px; text-transform: uppercase; letter-spacing: 1.5px; }
+        .admin-text { font-size: 14px; color: #444; line-height: 1.6; margin: 0; }
 
         .form-wrapper { background: var(--bg-light); padding: 50px; margin-top: 60px; border-radius: 4px; text-align: center; }
         .form-wrapper h3 { font-family: 'Playfair Display', serif; margin-bottom: 30px; font-size: 1.6rem; }
         .form-input { width: 100%; padding: 18px; margin-bottom: 20px; border: 1px solid #ddd; background: #fff; }
-        #wishlistToast { position: fixed; bottom: 30px; left: 50%; transform: translateX(-50%) translateY(120px); background: var(--primary); color: white; padding: 18px 40px; font-size: 11px; text-transform: uppercase; letter-spacing: 3px; z-index: 10000; transition: 0.6s; border: 1px solid var(--accent); }
-        #wishlistToast.show { transform: translateX(-50%) translateY(0); }
+        
+        #wishlistToast, #cartToast { position: fixed; bottom: 30px; left: 50%; transform: translateX(-50%) translateY(120px); background: var(--primary); color: white; padding: 18px 40px; font-size: 11px; text-transform: uppercase; letter-spacing: 3px; z-index: 10000; transition: 0.6s; border: 1px solid var(--accent); text-align: center; min-width: 300px; }
+        #wishlistToast.show, #cartToast.show { transform: translateX(-50%) translateY(0); }
+        .toast-link { color: var(--accent); font-weight: 700; text-decoration: underline; margin-left: 10px; cursor: pointer; }
+
+        .suggestions-wrapper { margin-top: 60px; padding-top: 80px; border-top: 1px solid var(--border); }
+        .sugg-section-title { font-family: 'Playfair Display', serif; font-size: 2rem; margin-bottom: 40px; text-align: center; font-weight: 400; }
+        
+        .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 35px; margin-bottom: 80px;}
+        .card { background: var(--white); border: 1px solid var(--border); transition: 0.4s; position: relative; display: flex; flex-direction: column; }
+        .card:hover { border-color: var(--primary); box-shadow: 15px 15px 0px rgba(0,0,0,0.03); }
+        
+        .img-box { width: 100%; height: 380px; overflow: hidden; background: #fff; position: relative; border-bottom: 1px solid var(--border); }
+        .img-box img { width: 100%; height: 100%; object-fit: contain; padding: 30px; transition: 0.7s; }
+        .card:hover .img-box img { transform: scale(1.08); }
+
+        .sale-badge { position: absolute; top: 20px; left: 20px; background: var(--heart); color: white; padding: 5px 12px; font-size: 10px; font-weight: 700; z-index: 10; text-transform: uppercase; }
+
+        .wishlist-btn { 
+            position: absolute; top: 20px; right: 20px; background: white; width: 38px; height: 38px; 
+            border-radius: 50%; border: none; display: flex; align-items: center; justify-content: center; 
+            cursor: pointer; font-size: 18px; color: #ccc; box-shadow: 0 5px 15px rgba(0,0,0,0.08); 
+            z-index: 20; transition: 0.3s; 
+        }
+        .wishlist-btn.active { color: var(--heart); }
+        .wishlist-btn:hover { color: var(--heart); }
+
+        .info { padding: 25px; flex-grow: 1; display: flex; flex-direction: column; }
+        .mfg { font-size: 9px; color: var(--accent); text-transform: uppercase; letter-spacing: 3px; font-weight: 700; margin-bottom: 10px; }
+        .name { font-size: 14px; font-weight: 500; margin-bottom: 15px; height: 40px; overflow: hidden; text-transform: uppercase; color: var(--primary); line-height: 1.4; text-decoration: none;}
+        a.name:hover { color: var(--accent); }
+        
+        .price-container { display: flex; align-items: baseline; gap: 10px; margin-top: auto; }
+        .price { font-family: 'Playfair Display', serif; font-size: 22px; font-weight: 700; color: #000; }
+        .price.old { font-size: 16px; color: #bbb; text-decoration: line-through; font-weight: 400; }
+        .price.sale { color: var(--heart); }
+
+        .btn-buy { 
+            display: block; background: transparent; border: none; border-top: 1px solid var(--border); 
+            padding: 20px; width: 100%; cursor: pointer; font-weight: 700; 
+            text-transform: uppercase; font-size: 10px; letter-spacing: 2px;
+            color: var(--primary); text-decoration: none; text-align: center; transition: 0.3s;
+        }
+        .btn-buy:hover { background: var(--primary); color: #fff; }
     </style>
 </head>
 <body>
@@ -203,14 +284,19 @@ $reviews = $stmt_r->get_result();
             </div>
         </div>
         <div class="purchase-column">
-            <span class="meta-brand"><?php echo htmlspecialchars($product['manufacturer']); ?></span>
+            <span class="meta-brand"><?php echo htmlspecialchars($product['manufacturer'] ?? ''); ?></span>
             <h1 class="main-h1"><?php echo htmlspecialchars($product['name']); ?></h1>
             <div class="price-display">
-                <?php $has_sale = ($product['is_sale'] == 1 && $product['sale_price'] > 0); $current_price = $has_sale ? $product['sale_price'] : $product['price']; ?>
+                <?php 
+                $has_sale = (!empty($product['old_price']) && $product['old_price'] > $product['price']) || (isset($product['badge']) && $product['badge'] === 'SALE'); 
+                $current_price = $product['price']; 
+                ?>
                 <span class="price-actual <?php echo $has_sale ? 'sale-price' : ''; ?>">₴<?php echo number_format($current_price, 0, '.', ' '); ?></span>
-                <?php if($has_sale): ?> <span class="price-was">₴<?php echo number_format($product['price'], 0, '.', ' '); ?></span> <?php endif; ?>
+                <?php if($has_sale && !empty($product['old_price'])): ?> 
+                    <span class="price-was">₴<?php echo number_format($product['old_price'], 0, '.', ' '); ?></span> 
+                <?php endif; ?>
             </div>
-            <button class="btn-checkout" onclick="location.href='cart_add.php?id=<?php echo $product_id; ?>&redirect=cart'">Додати до кошика</button>
+            <button class="btn-checkout" onclick="addToCart(<?php echo $product_id; ?>)">Додати до кошика</button>
         </div>
     </div>
 
@@ -228,8 +314,7 @@ $reviews = $stmt_r->get_result();
         <div class="specs-card-highlight">
             <h3>Характеристики</h3>
             <table class="specs-table">
-                <tr><td class="spec-label">Категорія</td><td class="spec-value"><?php echo htmlspecialchars($product['category']); ?></td></tr>
-                <tr><td class="spec-label">Об'єм</td><td class="spec-value"><?php echo $product['weight']; ?> мл/г</td></tr>
+                <tr><td class="spec-label">Категорія</td><td class="spec-value"><?php echo htmlspecialchars($product['category_name'] ?? 'Не вказана'); ?></td></tr>
                 <?php foreach($grouped_specs as $group => $items): ?>
                     <?php foreach($items as $spec): ?>
                         <tr>
@@ -253,10 +338,10 @@ $reviews = $stmt_r->get_result();
                     </div>
                     <p class="review-text">"<?php echo nl2br(htmlspecialchars($r['comment'])); ?>"</p>
 
-                    <?php if (!empty($r['admin_reply'])): ?>
+                    <?php if (!empty($r['reply_text'])): ?>
                         <div class="admin-answer-box">
                             <div class="admin-tag">Відповідь BeautyStore</div>
-                            <p class="admin-text"><?php echo nl2br(htmlspecialchars($r['admin_reply'])); ?></p>
+                            <p class="admin-text"><?php echo nl2br(htmlspecialchars($r['reply_text'])); ?></p>
                         </div>
                     <?php endif; ?>
                 </div>
@@ -267,12 +352,14 @@ $reviews = $stmt_r->get_result();
 
         <div class="form-wrapper">
             <h3>Залишити свій відгук</h3>
-            <?php if (isset($_SESSION['customer_id'])): ?>
+            <?php if (isset($_SESSION['user_id'])): ?>
                 <form method="POST">
                     <select name="rating" class="form-input" required>
-                        <option value="5">Оцінка: 5 зірок</option>
+                        <option value="5">5 зірок</option>
                         <option value="4">4 зірки</option>
                         <option value="3">3 зірки</option>
+                        <option value="2">2 зірки</option>
+                        <option value="1">1 зірка</option>
                     </select>
                     <textarea name="comment" class="form-input" rows="5" placeholder="Ваші враження..." required></textarea>
                     <button type="submit" name="submit_review" class="btn-checkout" style="width: auto; padding: 15px 60px;">Опублікувати</button>
@@ -282,9 +369,117 @@ $reviews = $stmt_r->get_result();
             <?php endif; ?>
         </div>
     </section>
+
+    <div class="suggestions-wrapper">
+        <?php if (!empty($cart_products)): ?>
+            <h2 class="sugg-section-title">Також у вашому кошику</h2>
+            <div class="grid">
+                <?php foreach($cart_products as $p): 
+                    $has_sale = (!empty($p['old_price']) && $p['old_price'] > $p['price']) || (isset($p['badge']) && $p['badge'] === 'SALE'); 
+                ?>
+                    <div class="card">
+                        <?php if($has_sale): ?>
+                            <div class="sale-badge">Sale</div>
+                        <?php endif; ?>
+                        <div class="img-box">
+                            <?php $is_wished = in_array($p['product_id'], $user_wishlist_ids); ?>
+                            <button class="wishlist-btn <?php echo $is_wished ? 'active' : ''; ?>" onclick="toggleWishlist(this, <?php echo $p['product_id']; ?>)">❤</button>
+                            <a href="product_details.php?id=<?php echo $p['product_id']; ?>">
+                                <img src="<?php echo $p['img'] ?: 'img/products/'.$p['product_id'].'.jpg'; ?>" onerror="this.src='https://via.placeholder.com/400x500?text=BeautyStore'">
+                            </a>
+                        </div>
+                        <div class="info">
+                            <div class="mfg"><?php echo htmlspecialchars($p['manufacturer'] ?? 'Premium'); ?></div>
+                            <a href="product_details.php?id=<?php echo $p['product_id']; ?>" class="name"><?php echo htmlspecialchars($p['name']); ?></a>
+                            <div class="price-container">
+                                <?php if($has_sale && !empty($p['old_price'])): ?>
+                                    <span class="price sale"><?php echo number_format($p['price'], 0, '.', ' '); ?> ₴</span>
+                                    <span class="price old"><?php echo number_format($p['old_price'], 0, '.', ' '); ?> ₴</span>
+                                <?php else: ?>
+                                    <span class="price"><?php echo number_format($p['price'], 0, '.', ' '); ?> ₴</span>
+                                <?php endif; ?>
+                            </div>
+                        </div>
+                        <button class="btn-buy" onclick="addToCart(<?php echo $p['product_id']; ?>)">У кошик</button>
+                    </div>
+                <?php endforeach; ?>
+            </div>
+        <?php endif; ?>
+
+        <?php if ($related_res && $related_res->num_rows > 0): ?>
+            <h2 class="sugg-section-title">З цієї ж категорії</h2>
+            <div class="grid">
+                <?php while($p = $related_res->fetch_assoc()): 
+                    $has_sale = (!empty($p['old_price']) && $p['old_price'] > $p['price']) || (isset($p['badge']) && $p['badge'] === 'SALE'); 
+                ?>
+                    <div class="card">
+                        <?php if($has_sale): ?>
+                            <div class="sale-badge">Sale</div>
+                        <?php endif; ?>
+                        <div class="img-box">
+                            <?php $is_wished = in_array($p['product_id'], $user_wishlist_ids); ?>
+                            <button class="wishlist-btn <?php echo $is_wished ? 'active' : ''; ?>" onclick="toggleWishlist(this, <?php echo $p['product_id']; ?>)">❤</button>
+                            <a href="product_details.php?id=<?php echo $p['product_id']; ?>">
+                                <img src="<?php echo $p['img'] ?: 'img/products/'.$p['product_id'].'.jpg'; ?>" onerror="this.src='https://via.placeholder.com/400x500?text=BeautyStore'">
+                            </a>
+                        </div>
+                        <div class="info">
+                            <div class="mfg"><?php echo htmlspecialchars($p['manufacturer'] ?? 'Premium'); ?></div>
+                            <a href="product_details.php?id=<?php echo $p['product_id']; ?>" class="name"><?php echo htmlspecialchars($p['name']); ?></a>
+                            <div class="price-container">
+                                <?php if($has_sale && !empty($p['old_price'])): ?>
+                                    <span class="price sale"><?php echo number_format($p['price'], 0, '.', ' '); ?> ₴</span>
+                                    <span class="price old"><?php echo number_format($p['old_price'], 0, '.', ' '); ?> ₴</span>
+                                <?php else: ?>
+                                    <span class="price"><?php echo number_format($p['price'], 0, '.', ' '); ?> ₴</span>
+                                <?php endif; ?>
+                            </div>
+                        </div>
+                        <button class="btn-buy" onclick="addToCart(<?php echo $p['product_id']; ?>)">У кошик</button>
+                    </div>
+                <?php endwhile; ?>
+            </div>
+        <?php endif; ?>
+
+        <?php if (!empty($recent_products)): ?>
+            <h2 class="sugg-section-title">Ви нещодавно переглядали</h2>
+            <div class="grid">
+                <?php foreach($recent_products as $p): 
+                    $has_sale = (!empty($p['old_price']) && $p['old_price'] > $p['price']) || (isset($p['badge']) && $p['badge'] === 'SALE'); 
+                ?>
+                    <div class="card">
+                        <?php if($has_sale): ?>
+                            <div class="sale-badge">Sale</div>
+                        <?php endif; ?>
+                        <div class="img-box">
+                            <?php $is_wished = in_array($p['product_id'], $user_wishlist_ids); ?>
+                            <button class="wishlist-btn <?php echo $is_wished ? 'active' : ''; ?>" onclick="toggleWishlist(this, <?php echo $p['product_id']; ?>)">❤</button>
+                            <a href="product_details.php?id=<?php echo $p['product_id']; ?>">
+                                <img src="<?php echo $p['img'] ?: 'img/products/'.$p['product_id'].'.jpg'; ?>" onerror="this.src='https://via.placeholder.com/400x500?text=BeautyStore'">
+                            </a>
+                        </div>
+                        <div class="info">
+                            <div class="mfg"><?php echo htmlspecialchars($p['manufacturer'] ?? 'Premium'); ?></div>
+                            <a href="product_details.php?id=<?php echo $p['product_id']; ?>" class="name"><?php echo htmlspecialchars($p['name']); ?></a>
+                            <div class="price-container">
+                                <?php if($has_sale && !empty($p['old_price'])): ?>
+                                    <span class="price sale"><?php echo number_format($p['price'], 0, '.', ' '); ?> ₴</span>
+                                    <span class="price old"><?php echo number_format($p['old_price'], 0, '.', ' '); ?> ₴</span>
+                                <?php else: ?>
+                                    <span class="price"><?php echo number_format($p['price'], 0, '.', ' '); ?> ₴</span>
+                                <?php endif; ?>
+                            </div>
+                        </div>
+                        <button class="btn-buy" onclick="addToCart(<?php echo $p['product_id']; ?>)">У кошик</button>
+                    </div>
+                <?php endforeach; ?>
+            </div>
+        <?php endif; ?>
+    </div>
 </div>
 
 <div id="wishlistToast">Додано в обране</div>
+<div id="cartToast">Товар додано у кошик</div>
 
 <script>
     function changePhoto(src, el) {
@@ -292,6 +487,24 @@ $reviews = $stmt_r->get_result();
         document.querySelectorAll('.thumb-item').forEach(item => item.classList.remove('active'));
         el.classList.add('active');
     }
+
+    function addToCart(id) {
+        fetch('cart_add.php?id=' + id + '&ajax=1')
+        .then(response => response.text())
+        .then(data => {
+            const toast = document.getElementById('cartToast');
+            toast.classList.add('show');
+            setTimeout(() => { toast.classList.remove('show'); }, 4000);
+
+            const cartCount = document.getElementById('cart-count');
+            if(cartCount) {
+                let current = parseInt(cartCount.innerText) || 0;
+                cartCount.innerText = current + 1;
+            }
+        })
+        .catch(error => console.error('Помилка:', error));
+    }
+
     function toggleWishlist(btn, id) {
         fetch('wishlist_add.php?id=' + id)
         .then(response => response.json())
