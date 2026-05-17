@@ -1,14 +1,12 @@
 <?php
-
-
 error_reporting(E_ALL);
 ini_set('display_errors', 1);
 
 if (!isset($pdo)) {
     $host = 'localhost';
     $db   = 'beautystore';
-    $user = 'root';
-    $pass = '';
+    $user = 'beautyuser';
+    $pass = '1234';
     
     try {
         $pdo = new PDO("mysql:host=$host;dbname=$db;charset=utf8mb4", $user, $pass, [
@@ -23,22 +21,19 @@ if (!isset($pdo)) {
     }
 }
 
-
 $categories_list = [];
 $customers_list = [];
 
 try {
-    
-    $cat_stmt = $pdo->query("SELECT DISTINCT category FROM product WHERE category IS NOT NULL AND category != ''");
-    $categories_list = $cat_stmt->fetchAll(PDO::FETCH_COLUMN);
+    $cat_stmt = $pdo->query("SELECT category_id, name FROM categories ORDER BY name ASC");
+    $categories_list = $cat_stmt->fetchAll();
 
-    
-    $cust_stmt = $pdo->query("SELECT customer_id, first_name, last_name, email FROM customer ORDER BY first_name ASC");
+
+    $cust_stmt = $pdo->query("SELECT user_id, first_name, last_name, email FROM users WHERE role = 'customer' ORDER BY first_name ASC");
     $customers_list = $cust_stmt->fetchAll();
 } catch (Exception $e) {
     $system_error = "Помилка завантаження довідників: " . $e->getMessage();
 }
-
 
 $action = $_POST['action'] ?? null;
 $query_results = [];
@@ -50,117 +45,112 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && $action) {
     try {
         switch ($action) {
             
-            
             case 'q1_full_info':
                 $sql = "SELECT 
                             p.product_id AS 'ID', 
-                            p.name AS 'product_name', 
+                            p.name AS 'Назва товару', 
                             p.price AS 'Ціна', 
-                            p.category AS 'Категорія', 
+                            cat.name AS 'Категорія', 
                             p.manufacturer AS 'Виробник', 
-                            p.subcategory AS 'Підкатегорія', 
                             p.stock AS 'Залишок', 
-                            p.color AS 'Колір', 
-                            p.weight AS 'Вага', 
-                            p.warranty AS 'Гарантія',
-                            GROUP_CONCAT(CONCAT(c.characteristic_name, ': ', c.characteristic_value) SEPARATOR '; ') AS 'characteristics'
+                            p.badge AS 'Бейдж',
+                            GROUP_CONCAT(CONCAT(c.characteristic_name, ': ', c.characteristic_value) SEPARATOR '; ') AS 'Всі характеристики'
                         FROM product p
+                        LEFT JOIN categories cat ON p.category_id = cat.category_id
                         LEFT JOIN characteristics c ON p.product_id = c.product_id
                         GROUP BY p.product_id";
                 $stmt = $pdo->query($sql);
                 $query_results = $stmt->fetchAll(PDO::FETCH_ASSOC);
                 break;
 
-            
             case 'q2_by_category':
-                $selected_cat = $_POST['category_filter'] ?? '';
-                $sql = "SELECT 
-                            product_id AS 'ID', 
-                            name AS 'Назва', 
-                            price AS 'Ціна', 
-                            manufacturer AS 'Виробник', 
-                            subcategory AS 'Підкатегорія', 
-                            description AS 'Опис', 
-                            stock AS 'Залишок'
-                        FROM product 
-                        WHERE category = :cat 
-                        ORDER BY price DESC";
-                $stmt = $pdo->prepare($sql);
-                $stmt->execute([':cat' => $selected_cat]);
-                $query_results = $stmt->fetchAll(PDO::FETCH_ASSOC);
-                break;
 
-            
-            case 'q3_top5_sold':
+                $selected_cat_id = $_POST['category_filter'] ?? 0;
                 $sql = "SELECT 
                             p.product_id AS 'ID', 
                             p.name AS 'Назва', 
-                            p.category AS 'Категорія', 
+                            p.price AS 'Ціна', 
                             p.manufacturer AS 'Виробник', 
-                            SUM(od.quantity) AS 'total_quantity_sold'
+                            p.description AS 'Опис', 
+                            p.stock AS 'Залишок'
+                        FROM product p
+                        WHERE p.category_id = :cat_id 
+                        ORDER BY p.price DESC";
+                $stmt = $pdo->prepare($sql);
+                $stmt->execute([':cat_id' => $selected_cat_id]);
+                $query_results = $stmt->fetchAll(PDO::FETCH_ASSOC);
+                break;
+
+            case 'q3_top5_sold':
+
+                $sql = "SELECT 
+                            p.product_id AS 'ID', 
+                            p.name AS 'Назва', 
+                            cat.name AS 'Категорія', 
+                            p.manufacturer AS 'Виробник', 
+                            SUM(od.quantity) AS 'Продано шт.'
                         FROM product p
                         JOIN Order_Details od ON p.product_id = od.product_id
-                        GROUP BY p.product_id, p.name, p.category, p.manufacturer
-                        ORDER BY total_quantity_sold DESC
+                        LEFT JOIN categories cat ON p.category_id = cat.category_id
+                        GROUP BY p.product_id, p.name, cat.name, p.manufacturer
+                        ORDER BY `Продано шт.` DESC
                         LIMIT 5";
                 $stmt = $pdo->query($sql);
                 $query_results = $stmt->fetchAll(PDO::FETCH_ASSOC);
                 break;
 
-            
             case 'q4_client_history':
-                $client_id = $_POST['client_filter'] ?? 0;
+
+                $user_id = $_POST['client_filter'] ?? 0;
                 $sql = "SELECT 
-                            c.customer_id AS 'ID Клієнта', 
-                            c.first_name AS 'Ім\'я', 
-                            c.last_name AS 'Прізвище', 
-                            p.product_id AS 'ID Товару', 
-                            p.name AS 'product_name', 
+                            u.user_id AS 'ID Клієнта', 
+                            u.first_name AS 'Ім\'я', 
+                            u.last_name AS 'Прізвище', 
+                            p.name AS 'Назва товару', 
                             od.quantity AS 'Кількість', 
-                            p.price AS 'Ціна од.', 
-                            (od.quantity * p.price) AS 'total_per_product',
-                            SUM(od.quantity * p.price) OVER (PARTITION BY c.customer_id) AS 'total_spent'
-                        FROM customer c
-                        JOIN orders o ON c.customer_id = o.customer_id
+                            od.unit_price AS 'Ціна купівлі', 
+                            (od.quantity * od.unit_price) AS 'Разом',
+                            SUM(od.quantity * od.unit_price) OVER (PARTITION BY u.user_id) AS 'Загальні витрати'
+                        FROM users u
+                        JOIN orders o ON u.user_id = o.user_id
                         JOIN Order_Details od ON o.order_id = od.order_id
                         JOIN product p ON od.product_id = p.product_id
-                        WHERE c.customer_id = :cid";
+                        WHERE u.user_id = :uid";
                 $stmt = $pdo->prepare($sql);
-                $stmt->execute([':cid' => $client_id]);
+                $stmt->execute([':uid' => $user_id]);
                 $query_results = $stmt->fetchAll(PDO::FETCH_ASSOC);
                 break;
 
-            
             case 'q5_top_categories':
                 $sql = "SELECT 
-                            p.category AS 'Категорія', 
-                            SUM(od.quantity) AS 'total_quantity_sold'
+                            cat.name AS 'Категорія', 
+                            SUM(od.quantity) AS 'Всього продано одиниць'
                         FROM product p
                         JOIN Order_Details od ON p.product_id = od.product_id
-                        GROUP BY p.category
-                        ORDER BY total_quantity_sold DESC";
+                        JOIN categories cat ON p.category_id = cat.category_id
+                        GROUP BY cat.name
+                        ORDER BY `Всього продано одиниць` DESC";
                 $stmt = $pdo->query($sql);
                 $query_results = $stmt->fetchAll(PDO::FETCH_ASSOC);
                 break;
 
-            
             case 'q6_loyal_clients':
+                
                 $sql = "SELECT 
-                            c.customer_id AS 'ID', 
-                            c.first_name AS 'Ім\'я', 
-                            c.last_name AS 'Прізвище', 
-                            c.email AS 'E-mail', 
-                            COUNT(DISTINCT o.order_id) AS 'order_count'
-                        FROM customer c
-                        JOIN orders o ON c.customer_id = o.customer_id
-                        GROUP BY c.customer_id, c.first_name, c.last_name, c.email
-                        HAVING order_count > 1
-                        ORDER BY order_count DESC";
+                            u.user_id AS 'ID', 
+                            u.first_name AS 'Ім\'я', 
+                            u.last_name AS 'Прізвище', 
+                            u.email AS 'E-mail', 
+                            COUNT(DISTINCT o.order_id) AS 'Кількість замовлень'
+                        FROM users u
+                        JOIN orders o ON u.user_id = o.user_id
+                        GROUP BY u.user_id, u.first_name, u.last_name, u.email
+                        HAVING `Кількість замовлень` > 1
+                        ORDER BY `Кількість замовлень` DESC";
                 $stmt = $pdo->query($sql);
                 $query_results = $stmt->fetchAll(PDO::FETCH_ASSOC);
                 break;
 
-            
             case 'q7_brand_flagships':
                 $sql = "WITH RankedProducts AS (
                             SELECT 
@@ -185,43 +175,44 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && $action) {
                 $query_results = $stmt->fetchAll(PDO::FETCH_ASSOC);
                 break;
 
-            
             case 'q8_high_spenders':
-                $amount = (float)($_POST['amount_filter'] ?? 100000);
-                $sql = "SELECT 
-                            c.customer_id AS 'ID', 
-                            c.first_name AS 'Ім\'я', 
-                            c.last_name AS 'Прізвище', 
-                            c.email AS 'E-mail', 
-                            SUM(od.quantity * p.price) AS 'total_spent'
-                        FROM customer c
-                        JOIN orders o ON c.customer_id = o.customer_id
-                        JOIN Order_Details od ON o.order_id = od.order_id
-                        JOIN product p ON od.product_id = p.product_id
-                        GROUP BY c.customer_id, c.first_name, c.last_name, c.email
-                        HAVING total_spent > :amount
-                        ORDER BY total_spent DESC";
-                $stmt = $pdo->prepare($sql);
-                $stmt->execute([':amount' => $amount]);
-                $query_results = $stmt->fetchAll(PDO::FETCH_ASSOC);
-                break;
-
+    $amount = (float)($_POST['amount_filter'] ?? 100000);
+    
+    
+    $sql = "SELECT 
+                u.user_id AS 'ID', 
+                u.first_name AS 'Ім\'я', 
+                u.last_name AS 'Прізвище', 
+                u.email AS 'E-mail', 
+                SUM(od.quantity * od.unit_price) AS 'Загальний чек'
+            FROM users u
+            JOIN orders o ON u.user_id = o.user_id
+            JOIN Order_Details od ON o.order_id = od.order_id
+            GROUP BY u.user_id, u.first_name, u.last_name, u.email
+            HAVING `Загальний чек` > :amount
+            ORDER BY `Загальний чек` DESC";
             
+    $stmt = $pdo->prepare($sql);
+    $stmt->execute([':amount' => $amount]);
+    $query_results = $stmt->fetchAll(PDO::FETCH_ASSOC);
+    break;
+
             case 'q9_never_sold':
+               
                 $sql = "SELECT 
                             p.product_id AS 'ID', 
                             p.name AS 'Назва товару', 
-                            p.category AS 'Категорія', 
+                            cat.name AS 'Категорія', 
                             p.manufacturer AS 'Виробник', 
                             p.stock AS 'Залишок'
                         FROM product p
+                        LEFT JOIN categories cat ON p.category_id = cat.category_id
                         LEFT JOIN Order_Details od ON p.product_id = od.product_id
                         WHERE od.product_id IS NULL";
                 $stmt = $pdo->query($sql);
                 $query_results = $stmt->fetchAll(PDO::FETCH_ASSOC);
                 break;
 
-            
             case 'q10_low_stock':
                 $sql = "SELECT 
                             product_id AS 'ID', 
@@ -266,9 +257,9 @@ function renderOutputTable($data, $error, $exec_time) {
     foreach ($data as $row) {
         $html .= "<tr class='hover:bg-[#fcfaf8] transition-colors border-b border-gray-50 last:border-0'>";
         foreach ($row as $key => $val) {
-            if (strpos(mb_strtolower($key), 'ціна') !== false || strpos(mb_strtolower($key), 'spent') !== false || strpos(mb_strtolower($key), 'прибуток') !== false || strpos(mb_strtolower($key), 'разом') !== false) {
+            if (strpos(mb_strtolower($key), 'ціна') !== false || strpos(mb_strtolower($key), 'spent') !== false || strpos(mb_strtolower($key), 'чек') !== false || strpos(mb_strtolower($key), 'разом') !== false || strpos(mb_strtolower($key), 'витрати') !== false) {
                 $html .= "<td class='p-6 text-gray-900 font-black whitespace-nowrap'>" . number_format((float)$val, 0, '.', ' ') . " ₴</td>";
-            } elseif ($key == 'characteristics' || $key == 'Повні характеристики') {
+            } elseif ($key == 'Всі характеристики' || $key == 'characteristics') {
                 $html .= "<td class='p-6 text-[10px] text-gray-400 font-medium italic lowercase max-w-xs truncate' title='" . htmlspecialchars((string)$val) . "'>" . htmlspecialchars((string)$val) . "</td>";
             } elseif (strpos(mb_strtolower($key), 'залишок') !== false && (int)$val < 15) {
                 $html .= "<td class='p-6 whitespace-nowrap'><span class='bg-red-50 text-red-500 px-3 py-1 rounded-full text-[9px] font-black uppercase'>🚨 {$val} шт</span></td>";
@@ -294,7 +285,6 @@ function renderOutputTable($data, $error, $exec_time) {
     <style>
         :root { --c-gold: #c5a059; --c-black: #0a0a0a; --c-bg: #fafafa; }
         body { font-family: 'Montserrat', sans-serif; background-color: var(--c-bg); color: var(--c-black); }
-        
         
         details {
             background: #ffffff;
@@ -341,7 +331,6 @@ function renderOutputTable($data, $error, $exec_time) {
         .details-body { padding: 40px; background: #ffffff; animation: fadeDown 0.4s ease-out; }
         @keyframes fadeDown { from { opacity: 0; transform: translateY(-10px); } to { opacity: 1; transform: translateY(0); } }
 
-        
         .form-control {
             width: 100%; max-width: 450px;
             padding: 16px 24px;
@@ -364,7 +353,6 @@ function renderOutputTable($data, $error, $exec_time) {
         }
         .btn-submit:hover { background: var(--c-gold); transform: translateY(-3px); box-shadow: 0 15px 25px rgba(197,160,89,0.3); }
 
-        
         ::-webkit-scrollbar { height: 8px; width: 8px; }
         ::-webkit-scrollbar-track { background: #f1f1f1; border-radius: 10px; }
         ::-webkit-scrollbar-thumb { background: #d1d1d1; border-radius: 10px; }
@@ -419,12 +407,12 @@ function renderOutputTable($data, $error, $exec_time) {
                 <form method="POST" class="flex flex-col md:flex-row items-start md:items-end gap-6">
                     <input type="hidden" name="action" value="q2_by_category">
                     <div class="flex-1 w-full md:w-auto">
-                        <label class="block text-[10px] font-black text-gray-400 uppercase tracking-widest mb-3 ml-2">Оберіть категорію з бази:</label>
+                        <label class="block text-[10px] font-black text-gray-400 uppercase tracking-widest mb-3 ml-2">Оберіть категорію з довідника:</label>
                         <select name="category_filter" class="form-control" required>
                             <option value="">-- Натисніть для вибору --</option>
                             <?php foreach($categories_list as $cat): ?>
-                                <option value="<?= htmlspecialchars($cat) ?>" <?= (isset($_POST['category_filter']) && $_POST['category_filter'] == $cat) ? 'selected' : '' ?>>
-                                    <?= htmlspecialchars($cat) ?>
+                                <option value="<?= $cat['category_id'] ?>" <?= (isset($_POST['category_filter']) && $_POST['category_filter'] == $cat['category_id']) ? 'selected' : '' ?>>
+                                    <?= htmlspecialchars($cat['name']) ?>
                                 </option>
                             <?php endforeach; ?>
                         </select>
@@ -458,12 +446,12 @@ function renderOutputTable($data, $error, $exec_time) {
                 <form method="POST" class="flex flex-col md:flex-row items-start md:items-end gap-6">
                     <input type="hidden" name="action" value="q4_client_history">
                     <div class="flex-1 w-full md:w-auto">
-                        <label class="block text-[10px] font-black text-gray-400 uppercase tracking-widest mb-3 ml-2">Оберіть клієнта:</label>
+                        <label class="block text-[10px] font-black text-gray-400 uppercase tracking-widest mb-3 ml-2">Оберіть клієнта з бази:</label>
                         <select name="client_filter" class="form-control" required>
-                            <option value="">-- База клієнтів --</option>
+                            <option value="">-- База клієнтів (users) --</option>
                             <?php foreach($customers_list as $c): ?>
-                                <option value="<?= $c['customer_id'] ?>" <?= (isset($_POST['client_filter']) && $_POST['client_filter'] == $c['customer_id']) ? 'selected' : '' ?>>
-                                    [ID: <?= $c['customer_id'] ?>] <?= htmlspecialchars($c['first_name'] . ' ' . $c['last_name']) ?>
+                                <option value="<?= $c['user_id'] ?>" <?= (isset($_POST['client_filter']) && $_POST['client_filter'] == $c['user_id']) ? 'selected' : '' ?>>
+                                    [ID: <?= $c['user_id'] ?>] <?= htmlspecialchars($c['first_name'] . ' ' . $c['last_name']) ?>
                                 </option>
                             <?php endforeach; ?>
                         </select>
@@ -520,7 +508,7 @@ function renderOutputTable($data, $error, $exec_time) {
             <summary><span class="text-[#c5a059] mr-3">8</span> Клієнти, які витратили понад вказану суму</summary>
             <div class="details-body">
                 <div class="mb-8 p-6 bg-[#fcfaf8] rounded-2xl border border-[#f0e6e0] text-xs font-bold text-gray-600 italic">
-                    Скрипт показує VIP-клієнтів, чия загальна сума покупок перевищує заданий поріг (наприклад, 100 000 грн).
+                    Скрипт показує VIP-клієнтів, чия загальна сума покупок перевищує заданий поріг (загальний чек).
                 </div>
                 <form method="POST" class="flex flex-col md:flex-row items-start md:items-end gap-6">
                     <input type="hidden" name="action" value="q8_high_spenders">
@@ -570,7 +558,6 @@ function renderOutputTable($data, $error, $exec_time) {
 
     <script>
         document.addEventListener('DOMContentLoaded', () => {
-           
             const openDetail = document.querySelector('details[open]');
             if (openDetail) {
                 setTimeout(() => {
@@ -578,11 +565,9 @@ function renderOutputTable($data, $error, $exec_time) {
                 }, 150);
             }
 
-            
             const detailsElements = document.querySelectorAll('details');
             detailsElements.forEach((targetDetail) => {
                 targetDetail.addEventListener('click', (e) => {
-                    
                     if(e.target.tagName !== 'SUMMARY' && e.target.closest('summary') === null) return;
                     
                     detailsElements.forEach((detail) => {
