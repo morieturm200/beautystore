@@ -7,14 +7,14 @@ if (session_status() === PHP_SESSION_NONE) {
 error_reporting(E_ALL);
 ini_set('display_errors', 1);
 
-
 $host = "localhost";
 $db   = "beautystore";
 $user = "beautyuser";
 $pass = "1234";
 
 try {
-    $pdo = new PDO("mysql:host=$host;dbname=$db;charset=utf8", $user, $pass);
+
+    $pdo = new PDO("mysql:host=$host;dbname=$db;charset=utf8mb4", $user, $pass);
     $pdo->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
 } catch (PDOException $e) {
     die("Помилка підключення: " . $e->getMessage());
@@ -22,65 +22,97 @@ try {
 
 $message = "";
 
-
 if (isset($_POST['login_btn'])) {
     $em = trim($_POST['email']);
     $pw = trim($_POST['password']);
 
     
-    $stmt = $pdo->prepare("SELECT * FROM customer WHERE email = ?");
+    $stmt = $pdo->prepare("SELECT * FROM users WHERE email = ?");
     $stmt->execute([$em]);
-    $user = $stmt->fetch(PDO::FETCH_ASSOC);
+    $user_data = $stmt->fetch(PDO::FETCH_ASSOC);
 
-    if ($user) {
+    if ($user_data) {
+        $login_success = false;
+
         
-        if (password_verify($pw, $user['customer_password']) || $pw === $user['customer_password']) {
+        if (password_verify($pw, $user_data['password'])) {
+            $login_success = true;
+        } 
+        
+        elseif ($pw === $user_data['password']) {
+            $login_success = true;
             
+            $new_hash = password_hash($pw, PASSWORD_DEFAULT);
+            $upd = $pdo->prepare("UPDATE users SET password = ? WHERE user_id = ?");
+            $upd->execute([$new_hash, $user_data['user_id']]);
+        }
+
+        if ($login_success) {
+       
+            $_SESSION['user_id'] = $user_data['user_id'];
+            $_SESSION['user_name'] = $user_data['first_name'];
+            $_SESSION['role'] = $user_data['role'];
             
-            $_SESSION['customer_id'] = $user['customer_id'];
-            $_SESSION['customer_name'] = $user['first_name'];
-            
-           
-            header("Location: profile.php");
-            exit();
+          
+            if ($user_data['role'] === 'admin') {
+                $_SESSION['is_prive_admin'] = true;
+                header("Location: admin/admin_prive.php");
+                exit();
+            } else {
+                header("Location: profile.php");
+                exit();
+            }
         } else {
             $message = "❌ Невірний пароль!";
         }
     } else {
-        
-        $stmt_admin = $pdo->prepare("SELECT * FROM Admin WHERE email = ?");
-        $stmt_admin->execute([$em]);
-        $admin = $stmt_admin->fetch(PDO::FETCH_ASSOC);
-
-        if ($admin && (password_verify($pw, $admin['admin_password']) || $pw === $admin['admin_password'])) {
-            $_SESSION['admin_id'] = $admin['admin_id'];
-            $_SESSION['admin_name'] = $admin['first_name'];
-            $_SESSION['is_prive_admin'] = true;
-            
-            header("Location: admin/admin_prive.php");
-            exit();
-        } else {
-            $message = "❌ Користувача з таким Email не знайдено!";
-        }
+        $message = "❌ Користувача з таким Email не знайдено!";
     }
 }
 
 
 if (isset($_POST['register_btn'])) {
-    $un = $_POST['customer_username'];
-    $fn = $_POST['first_name'];
-    $ln = $_POST['last_name'];
-    $em = $_POST['email'];
-    $pw = password_hash($_POST['customer_password'], PASSWORD_DEFAULT);
+    $un = trim($_POST['customer_username'] ?? '');
+    $em = trim($_POST['email'] ?? '');
+    $pass_input = $_POST['customer_password'] ?? '';
+    
 
-    try {
-        
-        $sql = "INSERT INTO customer (customer_username, customer_password, discount, first_name, last_name, email, address, gender, birthdate, phone_number) 
-                VALUES (?, ?, 0, ?, ?, ?, 'Не вказана', 'Інше', '2000-01-01', '0000000000')";
-        $pdo->prepare($sql)->execute([$un, $pw, $fn, $ln, $em]);
-        $message = "✅ Реєстрація успішна! Тепер увійдіть.";
-    } catch (Exception $e) {
-        $message = "❌ Помилка реєстрації: " . $e->getMessage();
+    if (empty($un) || empty($em) || empty($pass_input)) {
+        $message = "❌ Логін, Email та Пароль є обов'язковими!";
+    } else {
+
+        $check_stmt = $pdo->prepare("SELECT username, email FROM users WHERE username = ? OR email = ?");
+        $check_stmt->execute([$un, $em]);
+        $existing_user = $check_stmt->fetch(PDO::FETCH_ASSOC);
+
+        if ($existing_user) {
+            if ($existing_user['username'] === $un) {
+                $message = "❌ Цей логін вже зайнятий!";
+            } elseif ($existing_user['email'] === $em) {
+                $message = "❌ Ця електронна адреса вже зареєстрована!";
+            }
+        } else {
+
+            $pw = password_hash($pass_input, PASSWORD_DEFAULT);
+            $fn = !empty($_POST['first_name']) ? trim($_POST['first_name']) : null;
+            $ln = !empty($_POST['last_name']) ? trim($_POST['last_name']) : null;
+
+            try {
+   
+                $sql = "INSERT INTO users (username, password, first_name, last_name, email, role) 
+                        VALUES (?, ?, ?, ?, ?, 'customer')";
+                
+                $stmt = $pdo->prepare($sql);
+                $stmt->execute([$un, $pw, $fn, $ln, $em]);
+
+
+                header("Location: login_register.php?success=1");
+                exit();
+
+            } catch (PDOException $e) {
+                $message = "❌ Помилка бази: " . $e->getMessage();
+            }
+        }
     }
 }
 ?>
@@ -107,7 +139,13 @@ if (isset($_POST['register_btn'])) {
 <body>
 
     <?php if($message): ?>
-        <div class="msg"><?php echo $message; ?></div>
+        <div class="msg" style="color: #d32f2f; border-color: #d32f2f;"><?php echo $message; ?></div>
+    <?php endif; ?>
+
+    <?php if(isset($_GET['success'])): ?>
+        <div class="msg" style="color: #166534; border-color: #166534; background: #f0fdf4;">
+            ✅ Вітаємо! Реєстрація успішна. Тепер увійдіть.
+        </div>
     <?php endif; ?>
 
     <div class="container" id="login-box">
@@ -138,6 +176,32 @@ if (isset($_POST['register_btn'])) {
             document.getElementById('login-box').classList.toggle('hidden');
             document.getElementById('reg-box').classList.toggle('hidden');
         }
+
+        document.querySelector('input[name="customer_username"]').addEventListener('input', function() {
+            let username = this.value;
+            let feedback = document.getElementById('username-feedback');
+            
+            if(!feedback) {
+                feedback = document.createElement('div');
+                feedback.id = 'username-feedback';
+                feedback.style.cssText = "font-size: 10px; color: #d32f2f; font-weight: 700; margin-top: 5px; text-transform: uppercase; letter-spacing: 1px;";
+                this.parentNode.appendChild(feedback);
+            }
+
+            if (username.length > 2) {
+                fetch('check_username.php?username=' + username)
+                .then(response => response.json())
+                .then(data => {
+                    if (data.exists) {
+                        this.style.borderColor = '#d32f2f';
+                        feedback.innerText = '× Цей логін вже зайнятий';
+                    } else {
+                        this.style.borderColor = '#bbf7d0';
+                        feedback.innerText = '';
+                    }
+                }).catch(e => console.log('AJAX Error:', e));
+            }
+        });
     </script>
 </body>
 </html>
