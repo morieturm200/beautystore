@@ -1,15 +1,27 @@
-<?php session_start(); ?>
-<?php
+<?php 
+if (session_status() === PHP_SESSION_NONE) {
+    session_start();
+}
 error_reporting(E_ALL);
 ini_set('display_errors', 1);
-?>
-<?php include 'includes/header.php'; ?>
-<?php 
+
+include 'includes/header.php'; 
+
 
 $total_items = isset($_SESSION['cart']) ? array_sum($_SESSION['cart']) : 0; 
 
-$wishlist_count = isset($_SESSION['wishlist']) ? count($_SESSION['wishlist']) : 0;
 
+$user_wishlist_ids = [];
+if (isset($_SESSION['user_id'])) {
+    $c_id = intval($_SESSION['user_id']);
+    $wish_res = $conn->query("SELECT product_id FROM Wishlist WHERE user_id = $c_id");
+    if ($wish_res) {
+        while($w_row = $wish_res->fetch_assoc()) {
+            $user_wishlist_ids[] = $w_row['product_id'];
+        }
+    }
+}
+$wishlist_count = count($user_wishlist_ids);
 
 $sql_new_arrival = "
     SELECT p.*, i.image_url 
@@ -29,11 +41,12 @@ $sql_brands = "
 $res_brands = $conn->query($sql_brands);
 
 
+
 $sql_top_sales = "
-    SELECT p.*, MAX(i.image_url) as image_url, SUM(od.quantity) as total_sold 
+    SELECT p.*, MAX(i.image_url) as image_url, COALESCE(SUM(od.quantity), 0) as total_sold 
     FROM product p 
     LEFT JOIN Images i ON p.product_id = i.product_id AND i.is_primary = 1 
-    JOIN Order_Details od ON p.product_id = od.product_id 
+    LEFT JOIN Order_Details od ON p.product_id = od.product_id AND od.status = 'ordered'
     GROUP BY p.product_id 
     ORDER BY total_sold DESC 
     LIMIT 4";
@@ -67,7 +80,6 @@ $res_top_sales = $conn->query($sql_top_sales);
             overflow-x: hidden;
         }
 
-        
         .hero {
             position: relative;
             height: 85vh; 
@@ -112,26 +124,24 @@ $res_top_sales = $conn->query($sql_top_sales);
         }
 
         .hero h1 { 
-    font-family: 'Playfair Display', serif;
-    font-size: 4.5rem; 
-    margin-bottom: 25px; 
-    font-weight: 400;
-    color: var(--primary);
-    line-height: 1.1;
-    
-    text-shadow: 0 0 15px rgba(255, 255, 255, 0.8), 0 0 5px rgba(255, 255, 255, 0.5);
-}
+            font-family: 'Playfair Display', serif;
+            font-size: 4.5rem; 
+            margin-bottom: 25px; 
+            font-weight: 400;
+            color: var(--primary);
+            line-height: 1.1;
+            text-shadow: 0 0 15px rgba(255, 255, 255, 0.8), 0 0 5px rgba(255, 255, 255, 0.5);
+        }
 
-.hero p { 
-    font-size: 1.1rem; 
-    color: var(--primary); 
-    margin-bottom: 45px; 
-    text-transform: uppercase;
-    letter-spacing: 4px;
-    font-weight: 500;
-    
-    text-shadow: 0 0 10px rgba(255, 255, 255, 0.8);
-}
+        .hero p { 
+            font-size: 1.1rem; 
+            color: var(--primary); 
+            margin-bottom: 45px; 
+            text-transform: uppercase;
+            letter-spacing: 4px;
+            font-weight: 500;
+            text-shadow: 0 0 10px rgba(255, 255, 255, 0.8);
+        }
 
         .btn-collection {
             padding: 20px 55px;
@@ -149,7 +159,6 @@ $res_top_sales = $conn->query($sql_top_sales);
             background: var(--accent); 
             transform: translateY(-5px);
         }
-
         
         .categories {
             display: flex;
@@ -223,7 +232,6 @@ $res_top_sales = $conn->query($sql_top_sales);
         }
         .subcategory li a:hover { color: var(--accent); padding-left: 5px; }
 
-        
         .promo-banner {
             background-color: var(--white);
             padding: 100px 50px;
@@ -259,7 +267,6 @@ $res_top_sales = $conn->query($sql_top_sales);
         }
         .btn-outline:hover { background: var(--primary); color: var(--white); }
 
-        
         .brand-offers { 
             padding: 100px 50px; 
             background: var(--white); 
@@ -317,7 +324,6 @@ $res_top_sales = $conn->query($sql_top_sales);
             transition: 0.6s;
         }
 
-        
         .wishlist-btn {
             position: absolute;
             top: 15px;
@@ -416,7 +422,6 @@ $res_top_sales = $conn->query($sql_top_sales);
 
         .add-to-cart-btn:hover { background: var(--primary); color: var(--white); }
 
-        
         #wishlistToast {
             position: fixed;
             bottom: 30px;
@@ -435,7 +440,6 @@ $res_top_sales = $conn->query($sql_top_sales);
         }
         #wishlistToast.show { transform: translateX(-50%) translateY(0); }
 
-        
         .newsletter { background: #111; padding: 100px 20px; text-align: center; color: #fff; }
 
     </style>
@@ -456,12 +460,18 @@ $res_top_sales = $conn->query($sql_top_sales);
 </section>
 
 <?php
+$sql_cat = "
+    SELECT 
+        parent.name AS category, 
+        child.name AS subcategory 
+    FROM categories parent
+    LEFT JOIN categories child ON child.parent_id = parent.category_id
+    WHERE parent.parent_id IS NULL
+    ORDER BY parent.name ASC, child.name ASC";
 
-$sql_cat = "SELECT category, subcategory FROM product WHERE category IS NOT NULL AND category != '' GROUP BY category, subcategory ORDER BY category ASC";
 $res_cat = $conn->query($sql_cat);
 
 $categories_data = [];
-
 
 while($row = $res_cat->fetch_assoc()) {
     $cat_name = $row['category'];
@@ -488,9 +498,13 @@ $category_images = [
 ?>
 
 <section class="categories">
-    <?php foreach ($categories_data as $cat_title => $subcategories): ?>
+    <?php foreach ($category_images as $cat_title => $img_url): ?>
+        <?php 
+      
+        $subcategories = isset($categories_data[$cat_title]) ? $categories_data[$cat_title] : []; 
+        ?>
         <div class="category-card">
-            <img src="<?php echo $category_images[$cat_title] ?? 'https://via.placeholder.com/150?text=' . urlencode($cat_title); ?>" alt="<?php echo htmlspecialchars($cat_title); ?>">
+            <img src="<?php echo htmlspecialchars($img_url); ?>" alt="<?php echo htmlspecialchars($cat_title); ?>">
             
             <h3><?php echo htmlspecialchars($cat_title); ?></h3>
             
@@ -520,7 +534,8 @@ $category_images = [
     <div class="offers-grid">
         <?php if ($res_top_sales && $res_top_sales->num_rows > 0): ?>
             <?php while($top_item = $res_top_sales->fetch_assoc()): 
-                $is_fav = (isset($_SESSION['wishlist']) && in_array($top_item['product_id'], $_SESSION['wishlist'])) ? 'active' : '';
+           
+                $is_fav = in_array($top_item['product_id'], $user_wishlist_ids) ? 'active' : '';
                 
                 $img_src = !empty($top_item['image_url']) ? $top_item['image_url'] : "img/products/" . $top_item['product_id'] . ".jpg";
             ?>
@@ -529,9 +544,9 @@ $category_images = [
                     
                     <button class="wishlist-btn <?php echo $is_fav; ?>" onclick="toggleWishlist(this, <?php echo $top_item['product_id']; ?>)">❤</button>
 
-                    <a href="product_details.php?id=<?php echo $top_item['product_id']; ?>" style="text-decoration: none; color: inherit;">
+                    <a href="product_details.php?id=<?php echo htmlspecialchars($top_item['product_id']); ?>" style="text-decoration: none; color: inherit;">
                         <div class="offer-img-box">
-                            <img src="<?php echo $img_src; ?>" 
+                            <img src="<?php echo htmlspecialchars($img_src); ?>" 
                                  onerror="this.src='https://via.placeholder.com/300x400?text=Beauty+Top'" 
                                  alt="<?php echo htmlspecialchars($top_item['name']); ?>">
                         </div>
@@ -540,14 +555,14 @@ $category_images = [
                         
                         <div style="margin-bottom: 5px;">
                             <span style="font-size: 10px; color: var(--accent); font-weight: 700; text-transform: uppercase; letter-spacing: 1px;">
-                                <?php echo htmlspecialchars($top_item['manufacturer']); ?>
+                                <?php echo htmlspecialchars($top_item['manufacturer'] ?? ''); ?>
                             </span>
                         </div>
 
                         <h4><?php echo htmlspecialchars($top_item['name']); ?></h4>
                         
                         <div class="rating-mini">
-                            ★★★★★ <span style="color: #999; font-size: 9px; margin-left: 5px;">ПРОДАНО: <?php echo $top_item['total_sold']; ?> шт.</span>
+                            ★★★★★ <span style="color: #999; font-size: 9px; margin-left: 5px;">ПРОДАНО: <?php echo htmlspecialchars($top_item['total_sold']); ?> шт.</span>
                         </div>
 
                         <div class="price-area">
@@ -556,8 +571,8 @@ $category_images = [
                     </a>
                     
                     <button class="add-to-cart-btn" onclick="addToCart(event, this, <?php echo $top_item['product_id']; ?>)">
-    Додати в кошик
-</button>
+                        Додати в кошик
+                    </button>
                 </div>
             <?php endwhile; ?>
         <?php else: ?>
@@ -573,7 +588,8 @@ $category_images = [
     <div class="offers-grid">
         <?php if ($res_new_arrival && $res_new_arrival->num_rows > 0): ?>
             <?php while($new_item = $res_new_arrival->fetch_assoc()): 
-                $is_fav = (isset($_SESSION['wishlist']) && in_array($new_item['product_id'], $_SESSION['wishlist'])) ? 'active' : '';
+               
+                $is_fav = in_array($new_item['product_id'], $user_wishlist_ids) ? 'active' : '';
                 
                 $new_img_src = !empty($new_item['image_url']) ? $new_item['image_url'] : "img/products/" . $new_item['product_id'] . ".jpg";
             ?>
@@ -582,9 +598,9 @@ $category_images = [
                     
                     <button class="wishlist-btn <?php echo $is_fav; ?>" onclick="toggleWishlist(this, <?php echo $new_item['product_id']; ?>)">❤</button>
 
-                    <a href="product_details.php?id=<?php echo $new_item['product_id']; ?>" style="text-decoration: none; color: inherit;">
+                    <a href="product_details.php?id=<?php echo htmlspecialchars($new_item['product_id']); ?>" style="text-decoration: none; color: inherit;">
                         <div class="offer-img-box">
-                            <img src="<?php echo $new_img_src; ?>" 
+                            <img src="<?php echo htmlspecialchars($new_img_src); ?>" 
                                  onerror="this.src='https://via.placeholder.com/300x400?text=Beauty+Care'" 
                                  alt="<?php echo htmlspecialchars($new_item['name']); ?>">
                         </div>
@@ -593,7 +609,7 @@ $category_images = [
                         
                         <div style="margin-bottom: 5px;">
                             <span style="font-size: 10px; color: var(--accent); font-weight: 700; text-transform: uppercase; letter-spacing: 1px;">
-                                <?php echo htmlspecialchars($new_item['manufacturer']); ?>
+                                <?php echo htmlspecialchars($new_item['manufacturer'] ?? ''); ?>
                             </span>
                         </div>
 
@@ -611,9 +627,9 @@ $category_images = [
                         </div>
                     </a>
                     
-                   <button class="add-to-cart-btn" onclick="addToCart(event, this, <?php echo $new_item['product_id']; ?>)">
-    Додати в кошик
-</button>
+                    <button class="add-to-cart-btn" onclick="addToCart(event, this, <?php echo $new_item['product_id']; ?>)">
+                        Додати в кошик
+                    </button>
                 </div>
             <?php endwhile; ?>
         <?php else: ?>
@@ -636,7 +652,7 @@ $category_images = [
 
 <script>
     
-    const isLoggedIn = <?php echo isset($_SESSION['customer_id']) ? 'true' : 'false'; ?>;
+    const isLoggedIn = <?php echo isset($_SESSION['user_id']) ? 'true' : 'false'; ?>;
 
     
     function toggleWishlist(btn, id) {
@@ -669,43 +685,52 @@ $category_images = [
     }
 
     
-    function addToCart(event, btn, id) {
-        if(event) {
-            event.preventDefault();
-            event.stopPropagation();
-        }
+   function addToCart(event, arg1, arg2) {
+    if(event) {
+        event.preventDefault();
+        event.stopPropagation();
+    }
 
-        
-        if (!isLoggedIn) {
-            window.location.href = 'login_register.php';
+  
+    let productId = (arg2 !== undefined) ? arg2 : arg1;
+
+   
+    if (typeof isLoggedIn !== 'undefined' && !isLoggedIn) {
+        window.location.href = 'login_register.php';
+        return;
+    }
+
+    if (!productId || productId === 'undefined') {
+        alert("Помилка: Не вдалося визначити ID товару на сторінці.");
+        return;
+    }
+
+    fetch('cart_add.php?id=' + productId + '&ajax=1')
+    .then(response => {
+        if (response.redirected) {
+            window.location.href = response.url;
             return;
         }
-
+        return response.text();
+    })
+    .then(data => {
+        const toast = document.getElementById('wishlistToast');
+toast.innerText = "ТОВАР ДОДАНО В КОШИК ✦";
+toast.classList.add('show');
+setTimeout(() => toast.classList.remove('show'), 2500);
         
-        fetch('cart_add.php?id=' + id + '&ajax=1')
-        .then(response => {
-            if (response.redirected) {
-                window.location.href = response.url;
-                return;
+   
+        const cartLinks = document.querySelectorAll('nav a, header a');
+        cartLinks.forEach(link => {
+            if (link.textContent.toUpperCase().includes('КОШИК')) {
+                let match = link.textContent.match(/\d+/);
+                let current = match ? parseInt(match[0]) : 0;
+                link.innerHTML = `КОШИК (<span>${current + 1}</span>)`;
             }
-            return response.text();
-        })
-        .then(data => {
-            
-            alert("Дякуємо! Товар успішно додано до вашого кошика.");
-            
-            
-            const cartLinks = document.querySelectorAll('nav a, header a');
-            cartLinks.forEach(link => {
-                if (link.textContent.toUpperCase().includes('КОШИК')) {
-                    let match = link.textContent.match(/\d+/);
-                    let current = match ? parseInt(match[0]) : 0;
-                    link.innerHTML = `КОШИК (<span>${current + 1}</span>)`;
-                }
-            });
-        })
-        .catch(err => console.error('Помилка кошика:', err));
-    }
+        });
+    })
+    .catch(err => console.error('Помилка кошика:', err));
+}
 </script>
 </body>
 </html>
