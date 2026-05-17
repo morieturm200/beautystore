@@ -1,36 +1,61 @@
 <?php
+if (session_status() === PHP_SESSION_NONE) {
+    session_start();
+}
 error_reporting(E_ALL);
 ini_set('display_errors', 1);
 
-$host = "localhost"; $db = "beautystore"; $user = "beautyuser"; $pass = "1234";
-try {
-    $pdo = new PDO("mysql:host=$host;dbname=$db;charset=utf8", $user, $pass);
-    $pdo->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
-} catch (Exception $e) { die("Помилка підключення"); }
+if (!isset($pdo)) {
+    $host = "localhost"; $db = "beautystore"; $user = "beautyuser"; $pass = "1234";
+    try {
+        $pdo = new PDO("mysql:host=$host;dbname=$db;charset=utf8mb4", $user, $pass);
+        $pdo->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
+    } catch (Exception $e) { die("Помилка БД: " . $e->getMessage()); }
+}
 
-$date_from = $_GET['date_from'] ?? date('Y-m-01'); 
-$date_to = $_GET['date_to'] ?? date('Y-m-d');
+$date_from = $_GET['date_from'] ?? date('Y-m-01');
+$date_to   = $_GET['date_to']   ?? date('Y-m-d');
 
-if (isset($_GET['update_status']) && isset($_GET['order_id'])) {
-    $st = $pdo->prepare("UPDATE orders SET status = ? WHERE order_id = ?");
-    $st->execute([$_GET['update_status'], (int)$_GET['order_id']]);
+if (isset($_GET['update_status'], $_GET['order_id'])) {
+    $current_admin_id = intval($_SESSION['user_id'] ?? 0);
+    $pdo->prepare("UPDATE orders SET status = ?, admin_id = ? WHERE order_id = ?")
+        ->execute([$_GET['update_status'], $current_admin_id, (int)$_GET['order_id']]);
     header("Location: admin_prive.php?tab=orders&date_from=$date_from&date_to=$date_to");
     exit();
 }
 
 $stmt = $pdo->prepare("
-    SELECT o.*, c.first_name, c.last_name, c.email, c.phone_number, c.address,
-    (SELECT JSON_ARRAYAGG(
-        JSON_OBJECT(
-            'name', p.name,
-            'qty', od.quantity,
-            'price', od.unit_price,
-            'brand', p.manufacturer
-        )
-    ) FROM Order_Details od JOIN product p ON od.product_id = p.product_id WHERE od.order_id = o.order_id) as items_json
-    FROM orders o 
-    LEFT JOIN customer c ON o.customer_id = c.customer_id 
+    SELECT o.*,
+           u.first_name, u.last_name, u.email,
+           o.delivery_phone  AS phone_number,
+           o.delivery_region AS region,
+           o.delivery_city   AS city,
+           o.delivery_street AS street_house,
+           a.first_name AS admin_first,
+           a.last_name  AS admin_last,
+           (SELECT COALESCE(SUM(od_calc.quantity * od_calc.unit_price), 0)
+            FROM Order_Details od_calc
+            WHERE od_calc.order_id = o.order_id) AS total_price,
+           (SELECT JSON_ARRAYAGG(
+               JSON_OBJECT(
+                   'name',  p.name,
+                   'qty',   od.quantity,
+                   'price', od.unit_price,
+                   'brand', p.manufacturer
+               )
+            ) FROM Order_Details od
+              JOIN product p ON od.product_id = p.product_id
+            WHERE od.order_id = o.order_id) AS items_json
+    FROM orders o
+    LEFT JOIN users u ON o.user_id  = u.user_id
+    LEFT JOIN users a ON o.admin_id = a.user_id
     WHERE DATE(o.order_date) BETWEEN ? AND ?
+      AND o.status != 'accepted'
+      AND (
+          SELECT COALESCE(SUM(od2.quantity * od2.unit_price), 0)
+          FROM Order_Details od2
+          WHERE od2.order_id = o.order_id
+      ) > 0
     ORDER BY o.order_date DESC
 ");
 $stmt->execute([$date_from, $date_to]);
@@ -39,63 +64,85 @@ $orders = $stmt->fetchAll(PDO::FETCH_ASSOC);
 
 <div class="space-y-8">
     <div class="bg-white rounded-[40px] shadow-sm border border-[#f0e6e0] overflow-hidden">
+
         <div class="p-8 border-b border-gray-50 flex justify-between items-center bg-[#fcfaf8]">
             <h2 class="text-xl font-black italic uppercase text-gray-800">Журнал замовлень</h2>
-            <form method="GET" class="flex gap-2">
+            <form method="GET" class="flex gap-2 items-center">
                 <input type="hidden" name="tab" value="orders">
                 <input type="date" name="date_from" value="<?= $date_from ?>" class="text-[10px] p-2 border rounded-xl outline-none">
-                <input type="date" name="date_to" value="<?= $date_to ?>" class="text-[10px] p-2 border rounded-xl outline-none">
-                <button type="submit" class="bg-black text-white px-4 rounded-xl text-[10px] font-bold uppercase tracking-widest">ОК</button>
+                <input type="date" name="date_to"   value="<?= $date_to ?>"   class="text-[10px] p-2 border rounded-xl outline-none">
+                <button type="submit" class="bg-black text-white px-4 py-2 rounded-xl text-[10px] font-bold uppercase tracking-widest">ОК</button>
             </form>
         </div>
-        
+
         <table class="w-full text-left">
             <thead class="bg-gray-50/50 text-[10px] font-black uppercase text-gray-400 tracking-widest border-b">
                 <tr>
                     <th class="p-6">ID</th>
                     <th class="p-6">Клієнт</th>
                     <th class="p-6">Сума</th>
-                    <th class="p-6">Статус</th>
+                    <th class="p-6">Статус / Відповідальний</th>
                     <th class="p-6 text-right">Управління</th>
                 </tr>
             </thead>
             <tbody class="divide-y divide-gray-50">
-                <?php foreach($orders as $o): ?>
+                <?php foreach ($orders as $o):
+                    $status_data = [
+                        'accepted'   => ['label' => 'Прийнято',    'style' => 'bg-blue-50 text-blue-500'],
+                        'processing' => ['label' => 'В обробці',   'style' => 'bg-yellow-50 text-yellow-600'],
+                        'shipped'    => ['label' => 'Відправлено', 'style' => 'bg-purple-50 text-purple-500'],
+                        'delivered'  => ['label' => 'Доставлено',  'style' => 'bg-green-50 text-green-600'],
+                        'cancelled'  => ['label' => 'Скасовано',   'style' => 'bg-red-50 text-red-400'],
+                    ];
+                    $label = $status_data[$o['status']]['label'] ?? $o['status'];
+                    $style = $status_data[$o['status']]['style'] ?? 'bg-gray-50 text-gray-500';
+                ?>
                 <tr class="hover:bg-[#fdfbf9] transition-colors">
                     <td class="p-6 font-bold text-[#d4a373]">#<?= $o['order_id'] ?></td>
                     <td class="p-6">
-                        <div class="font-bold text-sm text-gray-800"><?= htmlspecialchars($o['first_name'] ?: 'Гість') ?></div>
-                        <div class="text-[9px] text-gray-400 uppercase font-black tracking-tighter"><?= $o['order_date'] ?></div>
+                        <div class="font-bold text-sm text-gray-800">
+                            <?= htmlspecialchars($o['first_name'] ?: 'Гість') ?>
+                            <?= htmlspecialchars($o['last_name'] ?? '') ?>
+                        </div>
+                        <div class="text-[9px] text-gray-400 uppercase font-black tracking-tighter">
+                            <?= $o['order_date'] ?>
+                        </div>
                     </td>
-                    <td class="p-6 font-black text-gray-800"><?= number_format($o['total_price'], 2, '.', ' ') ?> ₴</td>
+                    <td class="p-6 font-black text-gray-800">
+                        <?= number_format($o['total_price'], 2, '.', ' ') ?> ₴
+                    </td>
                     <td class="p-6">
-                        <?php 
-                            $status_styles = [
-                                'Нове' => 'bg-blue-50 text-blue-500',
-                                'В обробці' => 'bg-yellow-50 text-yellow-600',
-                                'Відправлено' => 'bg-purple-50 text-purple-500',
-                                'Доставлено' => 'bg-green-50 text-green-600',
-                                'Скасовано' => 'bg-red-50 text-red-400',
-                                'Прийнято' => 'bg-gray-100 text-gray-600'
-                            ];
-                            $style = $status_styles[$o['status']] ?? 'bg-gray-50 text-gray-500';
-                        ?>
                         <span class="px-3 py-1 rounded-full text-[9px] font-black uppercase tracking-tighter <?= $style ?>">
-                            <?= $o['status'] ?>
+                            <?= $label ?>
                         </span>
+                        <?php if(!empty($o['admin_first'])): ?>
+                            <div class="text-[8px] text-gray-400 uppercase font-black tracking-widest mt-2">
+                                👤 <?= htmlspecialchars($o['admin_first'] . ' ' . ($o['admin_last'] ?? '')) ?>
+                            </div>
+                        <?php else: ?>
+                            <div class="text-[8px] text-red-300 uppercase font-black tracking-widest mt-2">
+                                ⏳ Очікує розподілу
+                            </div>
+                        <?php endif; ?>
                     </td>
                     <td class="p-6 text-right">
                         <div class="flex justify-end items-center gap-3">
                             <div class="hidden lg:flex bg-gray-50 p-1 rounded-xl gap-1 border border-gray-100">
-                                <a href="?tab=orders&order_id=<?= $o['order_id'] ?>&update_status=В обробці&date_from=<?= $date_from ?>&date_to=<?= $date_to ?>" class="p-1 hover:bg-white rounded-lg transition" title="В обробку">⚙️</a>
-                                <a href="?tab=orders&order_id=<?= $o['order_id'] ?>&update_status=Відправлено&date_from=<?= $date_from ?>&date_to=<?= $date_to ?>" class="p-1 hover:bg-white rounded-lg transition" title="Відправити">🚀</a>
-                                <a href="?tab=orders&order_id=<?= $o['order_id'] ?>&update_status=Доставлено&date_from=<?= $date_from ?>&date_to=<?= $date_to ?>" class="p-1 hover:bg-white rounded-lg text-green-400 transition" title="Виконано">✅</a>
-                                <button onclick="confirmCancel(<?= $o['order_id'] ?>)" class="p-1 hover:bg-red-50 rounded-lg text-red-400 transition" title="Скасувати">❌</button>
+                                <a href="?tab=orders&order_id=<?= $o['order_id'] ?>&update_status=processing&date_from=<?= $date_from ?>&date_to=<?= $date_to ?>"
+                                   class="p-1 hover:bg-white rounded-lg transition" title="В обробку">⚙️</a>
+                                <a href="?tab=orders&order_id=<?= $o['order_id'] ?>&update_status=shipped&date_from=<?= $date_from ?>&date_to=<?= $date_to ?>"
+                                   class="p-1 hover:bg-white rounded-lg transition" title="Відправити">🚀</a>
+                                <a href="?tab=orders&order_id=<?= $o['order_id'] ?>&update_status=delivered&date_from=<?= $date_from ?>&date_to=<?= $date_to ?>"
+                                   class="p-1 hover:bg-white rounded-lg transition" title="Виконано">✅</a>
+                                <button onclick="confirmCancel(<?= $o['order_id'] ?>)"
+                                        class="p-1 hover:bg-red-50 rounded-lg text-red-400 transition" title="Скасувати">❌</button>
                             </div>
                             <div class="flex gap-1">
                                 <?php $encoded = base64_encode(json_encode($o)); ?>
-                                <button onclick="openOrderModal('<?= $encoded ?>')" class="w-10 h-10 flex items-center justify-center bg-[#f5ebe0] text-[#d4a373] rounded-xl hover:shadow-md transition text-lg">👁</button>
-                                <a href="../invoice.php?order_id=<?= $o['order_id'] ?>" target="_blank" class="w-10 h-10 flex items-center justify-center bg-gray-100 rounded-xl text-lg hover:shadow-md transition">📄</a>
+                                <button onclick="openOrderModal('<?= $encoded ?>')"
+                                        class="w-10 h-10 flex items-center justify-center bg-[#f5ebe0] text-[#d4a373] rounded-xl hover:shadow-md transition text-lg">👁</button>
+                                <a href="../invoice.php?order_id=<?= $o['order_id'] ?>" target="_blank"
+                                   class="w-10 h-10 flex items-center justify-center bg-gray-100 rounded-xl text-lg hover:shadow-md transition">📄</a>
                             </div>
                         </div>
                     </td>
@@ -107,28 +154,37 @@ $orders = $stmt->fetchAll(PDO::FETCH_ASSOC);
 </div>
 
 <div id="orderModal" class="fixed inset-0 bg-black/60 backdrop-blur-sm hidden z-[100] flex items-center justify-center p-4">
-    <div class="bg-white w-full max-w-2xl rounded-[40px] shadow-2xl overflow-hidden animate-in fade-in zoom-in duration-300">
+    <div class="bg-white w-full max-w-2xl rounded-[40px] shadow-2xl overflow-hidden">
         <div class="p-8 border-b flex justify-between items-center bg-[#fcfaf8]">
             <div>
-                <h3 class="text-2xl font-black italic uppercase text-gray-800">Замовлення <span id="m_id" class="text-[#d4a373]"></span></h3>
+                <h3 class="text-2xl font-black italic uppercase text-gray-800">
+                    Замовлення <span id="m_id" class="text-[#d4a373]"></span>
+                </h3>
                 <p id="m_date" class="text-[10px] text-gray-400 font-bold uppercase tracking-widest"></p>
             </div>
-            <button onclick="closeOrderModal()" class="text-2xl text-gray-300">✕</button>
+            <button onclick="closeOrderModal()" class="text-2xl text-gray-300 hover:text-gray-600 transition">✕</button>
         </div>
+
         <div class="p-8 space-y-6 max-h-[70vh] overflow-y-auto">
-            <div class="grid grid-cols-2 gap-8">
+            <div class="grid grid-cols-3 gap-6">
                 <div>
                     <label class="text-[9px] font-black text-[#d4a373] uppercase tracking-widest">Клієнт</label>
-                    <p id="m_name" class="font-bold text-gray-800"></p>
+                    <p id="m_name"  class="font-bold text-gray-800 mt-1"></p>
                     <p id="m_email" class="text-sm text-gray-500"></p>
                     <p id="m_phone" class="text-sm text-gray-500"></p>
                 </div>
                 <div>
                     <label class="text-[9px] font-black text-[#d4a373] uppercase tracking-widest">Доставка</label>
-                    <p id="m_address" class="text-sm text-gray-700 leading-relaxed italic"></p>
+                    <p id="m_address" class="text-sm text-gray-700 leading-relaxed italic mt-1"></p>
+                </div>
+                <div>
+                    <label class="text-[9px] font-black text-[#d4a373] uppercase tracking-widest">Менеджер</label>
+                    <p id="m_admin" class="font-bold text-gray-800 mt-1 uppercase text-xs tracking-wider"></p>
                 </div>
             </div>
+
             <div id="m_items" class="space-y-2"></div>
+
             <div class="pt-6 border-t flex justify-between items-center">
                 <div id="m_cancel_area"></div>
                 <div class="text-right">
@@ -141,11 +197,13 @@ $orders = $stmt->fetchAll(PDO::FETCH_ASSOC);
 </div>
 
 <div id="confirmModal" class="fixed inset-0 bg-black/60 backdrop-blur-md hidden z-[110] flex items-center justify-center p-4">
-    <div class="bg-white w-full max-w-sm rounded-[40px] shadow-2xl p-10 text-center space-y-6 animate-in zoom-in duration-200">
+    <div class="bg-white w-full max-w-sm rounded-[40px] shadow-2xl p-10 text-center space-y-6">
         <div class="w-20 h-20 bg-red-50 text-red-400 rounded-full flex items-center justify-center text-3xl mx-auto">⚠️</div>
         <div>
             <h3 class="text-xl font-black uppercase italic tracking-tighter text-gray-800">Скасувати замовлення?</h3>
-            <p class="text-xs text-gray-400 font-bold mt-2 uppercase tracking-widest">Замовлення <span id="confirm_order_id" class="text-red-400"></span> буде переведено в статус "Скасовано"</p>
+            <p class="text-xs text-gray-400 font-bold mt-2 uppercase tracking-widest">
+                Замовлення <span id="confirm_order_id" class="text-red-400"></span> буде переведено в статус "Скасовано"
+            </p>
         </div>
         <div class="flex flex-col gap-2">
             <a id="confirm_link" href="#" class="bg-black text-white py-4 rounded-2xl font-black uppercase text-[10px] tracking-[0.2em] hover:bg-red-500 transition shadow-lg">Так, скасувати</a>
@@ -155,16 +213,10 @@ $orders = $stmt->fetchAll(PDO::FETCH_ASSOC);
 </div>
 
 <script>
-// Логіка для гарного підтвердження
 function confirmCancel(orderId) {
-    const modal = document.getElementById('confirmModal');
-    const link = document.getElementById('confirm_link');
-    const displayId = document.getElementById('confirm_order_id');
-    
-    displayId.innerText = '#' + orderId;
-    link.href = `?tab=orders&order_id=${orderId}&update_status=Скасовано&date_from=<?= $date_from ?>&date_to=<?= $date_to ?>`;
-    
-    modal.classList.remove('hidden');
+    document.getElementById('confirm_order_id').innerText = '#' + orderId;
+    document.getElementById('confirm_link').href = `?tab=orders&order_id=${orderId}&update_status=cancelled&date_from=<?= $date_from ?>&date_to=<?= $date_to ?>`;
+    document.getElementById('confirmModal').classList.remove('hidden');
     document.body.style.overflow = 'hidden';
 }
 
@@ -175,23 +227,38 @@ function closeConfirmModal() {
     }
 }
 
-// Логіка перегляду замовлення
 function openOrderModal(base64Data) {
     const order = JSON.parse(atob(base64Data));
-    document.getElementById('m_id').innerText = '#' + order.order_id;
+
+    document.getElementById('m_id').innerText   = '#' + order.order_id;
     document.getElementById('m_date').innerText = order.order_date;
-    document.getElementById('m_name').innerText = (order.first_name || 'Гість') + ' ' + (order.last_name || '');
-    document.getElementById('m_email').innerText = order.email || '—';
+
+    // Клієнт
+    document.getElementById('m_name').innerText  = (order.first_name || 'Гість') + ' ' + (order.last_name || '');
+    document.getElementById('m_email').innerText = order.email        || '—';
     document.getElementById('m_phone').innerText = order.phone_number || '—';
-    document.getElementById('m_address').innerText = order.address || 'Адреса відсутня';
-    document.getElementById('m_total').innerText = parseFloat(order.total_price).toLocaleString() + ' ₴';
 
+    // Адреса
+    const parts = [order.region, order.city, order.street_house].filter(Boolean);
+    document.getElementById('m_address').innerText = parts.length ? parts.join(', ') : 'Адреса відсутня';
+
+    // ВИПРАВЛЕНО: Читаємо та виводимо ім'я адміна в модалку через JS
+    if (order.admin_first) {
+        document.getElementById('m_admin').innerHTML = `<span class="text-green-600">✓ ${order.admin_first} ${order.admin_last || ''}</span>`;
+    } else {
+        document.getElementById('m_admin').innerHTML = '<span class="text-red-400">Не призначено</span>';
+    }
+
+    // Сума
+    document.getElementById('m_total').innerText = parseFloat(order.total_price).toLocaleString('uk-UA') + ' ₴';
+
+    // Кнопка скасування
     const cancelArea = document.getElementById('m_cancel_area');
-    if (order.status !== 'Скасовано') {
-        // У модалці теж замінюємо стандартний confirm на нашу функцію
-        cancelArea.innerHTML = `<button onclick="confirmCancel(${order.order_id})" class="bg-red-50 text-red-500 px-6 py-3 rounded-2xl text-[9px] font-black uppercase tracking-widest hover:bg-red-500 hover:text-white transition shadow-sm">Скасувати замовлення</button>`;
-    } else { cancelArea.innerHTML = ''; }
+    cancelArea.innerHTML = order.status !== 'cancelled'
+        ? `<button onclick="confirmCancel(${order.order_id})" class="bg-red-50 text-red-500 px-6 py-3 rounded-2xl text-[9px] font-black uppercase tracking-widest hover:bg-red-500 hover:text-white transition shadow-sm">Скасувати замовлення</button>`
+        : '';
 
+    // Товари
     const container = document.getElementById('m_items');
     container.innerHTML = '<label class="text-[9px] font-black text-gray-400 uppercase tracking-widest block mb-2">Товари</label>';
     if (order.items_json) {
@@ -204,11 +271,12 @@ function openOrderModal(base64Data) {
                     </div>
                     <div class="text-right">
                         <div class="text-xs font-bold text-gray-400">${item.qty} шт.</div>
-                        <div class="font-black text-gray-800">${(item.qty * item.price).toLocaleString()} ₴</div>
+                        <div class="font-black text-gray-800">${(item.qty * item.price).toLocaleString('uk-UA')} ₴</div>
                     </div>
                 </div>`;
         });
     }
+
     document.getElementById('orderModal').classList.remove('hidden');
     document.body.style.overflow = 'hidden';
 }
