@@ -1,6 +1,9 @@
-<?php session_start(); ?>
-<?php include 'includes/header.php'; ?>
 <?php
+if (session_status() === PHP_SESSION_NONE) {
+    session_start();
+}
+
+include 'includes/header.php';
 
 $giveaway = [
     'title' => 'The Royal Beauty Giveaway',
@@ -9,10 +12,15 @@ $giveaway = [
 ];
 
 $sql = "SELECT p.*, i.image_url, 
-        ROUND(((p.price - p.sale_price) / p.price) * 100) as discount_percent 
+        CASE 
+            WHEN p.old_price IS NOT NULL AND p.old_price > p.price 
+            THEN ROUND(((p.old_price - p.price) / p.old_price) * 100)
+            ELSE 0 
+        END as discount_percent 
         FROM product p
         LEFT JOIN Images i ON p.product_id = i.product_id AND i.is_primary = 1
-        WHERE (p.is_sale = 1 AND p.sale_price < p.price) 
+        WHERE p.badge = 'SALE' 
+        OR (p.old_price IS NOT NULL AND p.old_price > p.price)
         OR p.is_giveaway_participant = 1
         ORDER BY p.is_giveaway_participant DESC, discount_percent DESC";
 
@@ -20,7 +28,6 @@ $result = $conn->query($sql);
 
 $total_items = isset($_SESSION['cart']) ? array_sum($_SESSION['cart']) : 0; 
 ?>
-
 <!DOCTYPE html>
 <html lang="uk">
 <head>
@@ -41,7 +48,6 @@ $total_items = isset($_SESSION['cart']) ? array_sum($_SESSION['cart']) : 0;
         * { box-sizing: border-box; margin: 0; padding: 0; font-family: 'Montserrat', sans-serif; }
         body { background-color: var(--bg-light); color: var(--primary); line-height: 1.6; }
 
-       
         .giveaway-hero {
             background: var(--white); padding: 100px 20px; text-align: center;
             border-bottom: 1px solid var(--border);
@@ -50,7 +56,6 @@ $total_items = isset($_SESSION['cart']) ? array_sum($_SESSION['cart']) : 0;
         .giveaway-hero h1 { font-family: 'Playfair Display', serif; font-size: 3.5rem; font-style: italic; margin-bottom: 20px; font-weight: 400; }
         .giveaway-hero p { max-width: 650px; margin: 0 auto 30px; color: #666; font-size: 1rem; }
 
-       
         .prizes-grid {
             display: flex; justify-content: center; gap: 20px; max-width: 1200px; margin: 0 auto; padding: 0 20px;
         }
@@ -63,7 +68,6 @@ $total_items = isset($_SESSION['cart']) ? array_sum($_SESSION['cart']) : 0;
         .prize-item h3 { font-family: 'Playfair Display', serif; font-size: 1.4rem; margin-bottom: 8px; }
         .prize-item p { font-size: 0.8rem; color: #888; }
 
-        
         .rules-bar {
             background: var(--primary); color: #fff; padding: 60px 40px; text-align: center; margin-top: -1px;
         }
@@ -74,12 +78,10 @@ $total_items = isset($_SESSION['cart']) ? array_sum($_SESSION['cart']) : 0;
         .rule-card h4 { font-size: 0.85rem; text-transform: uppercase; letter-spacing: 2px; margin-bottom: 12px; color: var(--accent); }
         .rule-card p { font-size: 0.8rem; opacity: 0.6; line-height: 1.6; }
 
-        
         .container { max-width: 1300px; margin: 80px auto; padding: 0 20px; }
         .section-header { text-align: center; margin-bottom: 60px; }
         .section-header h2 { font-family: 'Playfair Display', serif; font-size: 2.5rem; font-weight: 400; }
 
-        
         .product-grid { 
             display: grid; 
             grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); 
@@ -158,7 +160,6 @@ $total_items = isset($_SESSION['cart']) ? array_sum($_SESSION['cart']) : 0;
         }
         .buy-btn:hover { background: var(--primary); color: var(--white); }
 
-        /* Toast */
         .toast {
             position: fixed; bottom: 30px; right: 30px; background: var(--primary); color: #fff;
             padding: 20px 40px; transform: translateY(150%); transition: 0.5s; z-index: 9999;
@@ -178,8 +179,8 @@ $total_items = isset($_SESSION['cart']) ? array_sum($_SESSION['cart']) : 0;
 
 <section class="giveaway-hero">
     <span class="badge-prive">The Royal Beauty Giveaway</span>
-    <h1><?php echo $giveaway['title']; ?></h1>
-    <p><?php echo $giveaway['description']; ?></p>
+    <h1><?php echo htmlspecialchars($giveaway['title']); ?></h1>
+    <p><?php echo htmlspecialchars($giveaway['description']); ?></p>
     
     <div class="prizes-grid">
         <div class="prize-item">
@@ -216,7 +217,7 @@ $total_items = isset($_SESSION['cart']) ? array_sum($_SESSION['cart']) : 0;
         <div class="rule-card">
             <span>03</span>
             <h4>Прямий ефір</h4>
-            <p>Переможці будуть обрані в Instagram <strong><?php echo $giveaway['end_date']; ?></strong>.</p>
+            <p>Переможці будуть обрані в Instagram <strong><?php echo htmlspecialchars($giveaway['end_date']); ?></strong>.</p>
         </div>
     </div>
 </section>
@@ -227,37 +228,36 @@ $total_items = isset($_SESSION['cart']) ? array_sum($_SESSION['cart']) : 0;
     </div>
     
     <div class="product-grid">
-        <?php if ($result->num_rows > 0): ?>
+        <?php if ($result && $result->num_rows > 0): ?>
             <?php while($row = $result->fetch_assoc()): 
-                $has_discount = ($row['is_sale'] && $row['sale_price'] < $row['price']);
-                $display_price = $has_discount ? $row['sale_price'] : $row['price'];
+                $has_discount = ($row['badge'] === 'SALE' || (!empty($row['old_price']) && $row['old_price'] > $row['price']));
                 $img_src = !empty($row['image_url']) ? $row['image_url'] : "img/products/" . $row['product_id'] . ".jpg";
             ?>
                 <div class="product-card">
-                    <?php if ($has_discount): ?>
-                        <div class="discount-tag">-<?php echo $row['discount_percent']; ?>%</div>
+                    <?php if ($has_discount && isset($row['discount_percent']) && $row['discount_percent'] > 0): ?>
+                        <div class="discount-tag">-<?php echo htmlspecialchars($row['discount_percent']); ?>%</div>
                     <?php endif; ?>
 
                     <?php if ($row['is_giveaway_participant']): ?>
                         <div class="giveaway-tag">🎁 GIVEAWAY</div>
                     <?php endif; ?>
 
-                    <a href="product_details.php?id=<?php echo $row['product_id']; ?>" style="text-decoration: none; color: inherit; display: flex; flex-direction: column; height: 100%;">
+                    <a href="product_details.php?id=<?php echo htmlspecialchars($row['product_id']); ?>" style="text-decoration: none; color: inherit; display: flex; flex-direction: column; height: 100%;">
                         <div class="img-box">
-                            <img src="<?php echo $img_src; ?>" onerror="this.src='https://via.placeholder.com/300x400?text=Beauty'">
+                            <img src="<?php echo htmlspecialchars($img_src); ?>" onerror="this.src='https://via.placeholder.com/300x400?text=Beauty'">
                         </div>
                         <div class="card-details">
-                            <span class="brand"><?php echo htmlspecialchars($row['manufacturer']); ?></span>
+                            <span class="brand"><?php echo htmlspecialchars($row['manufacturer'] ?? ''); ?></span>
                             <h4 class="name"><?php echo htmlspecialchars($row['name']); ?></h4>
                             <div class="prices">
-                                <span class="price-new <?php echo $has_discount ? 'sale' : ''; ?>"><?php echo number_format($display_price, 0, '.', ' '); ?> ₴</span>
-                                <?php if ($has_discount): ?>
-                                    <span class="price-old"><?php echo number_format($row['price'], 0, '.', ' '); ?> ₴</span>
+                                <span class="price-new <?php echo $has_discount ? 'sale' : ''; ?>"><?php echo number_format($row['price'], 0, '.', ' '); ?> ₴</span>
+                                <?php if ($has_discount && !empty($row['old_price'])): ?>
+                                    <span class="price-old"><?php echo number_format($row['old_price'], 0, '.', ' '); ?> ₴</span>
                                 <?php endif; ?>
                             </div>
                         </div>
                     </a>
-                    <a href="cart_add.php?id=<?php echo $row['product_id']; ?>&added=1" class="buy-btn">
+                    <a href="cart_add.php?id=<?php echo htmlspecialchars($row['product_id']); ?>&added=1" class="buy-btn">
                         <?php echo $row['is_giveaway_participant'] ? 'Взяти участь' : 'У кошик'; ?>
                     </a>
                 </div>
