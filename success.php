@@ -1,5 +1,5 @@
 <?php
-// Отримуємо номер замовлення
+
 $order_id = isset($_GET['id']) ? htmlspecialchars($_GET['id']) : '0000';
 ?>
 <!DOCTYPE html>
@@ -34,7 +34,7 @@ $order_id = isset($_GET['id']) ? htmlspecialchars($_GET['id']) : '0000';
             width: 100%;
             background: var(--white);
             padding: 80px 40px;
-            border: 3px solid var(--primary); /* Контрастна чорна рамка як у Checkout */
+            border: 3px solid var(--primary); 
             text-align: center;
             box-shadow: 20px 20px 0px rgba(0,0,0,0.05);
         }
