@@ -1,10 +1,13 @@
 <?php 
-session_start(); 
-
-
+if (session_status() === PHP_SESSION_NONE) {
+    session_start();
+}
+error_reporting(E_ALL);
+ini_set('display_errors', 1);
 
 try {
-    $pdo = new PDO("mysql:host=localhost;dbname=beautystore;charset=utf8", "beautyuser", "1234");
+
+    $pdo = new PDO("mysql:host=localhost;dbname=beautystore;charset=utf8mb4", "beautyuser", "1234");
     $pdo->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
 } catch (Exception $e) { 
     $db_error = $e->getMessage(); 
@@ -14,16 +17,27 @@ try {
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['message'])) {
     header('Content-Type: application/json');
     
-    $customer_id = $_SESSION['customer_id'] ?? null;
-    $name = $_POST['customer_name'] ?? 'Гість';
-    $subject = "Запит від: " . $name;
-    $message = $_POST['message'];
-    $date = date('Y-m-d H:i:s');
+    $user_id = $_SESSION['user_id'] ?? null;
+    $name = trim($_POST['customer_name'] ?? 'Гість');
+    $email = trim($_POST['customer_email'] ?? 'Не вказано');
+    $message_raw = trim($_POST['message']);
+
+  
+    if ($user_id) {
+        $subject = "ЗАРЕЄСТРОВАНИЙ КЛІЄНТ: " . $name . " (ID: $user_id)";
+        $final_message = $message_raw;
+    } else {
+        $subject = "НЕАВТОРИЗОВАНИЙ ГІСТЬ: " . $name;
+   
+        $final_message = "КОНТАКТНА ПОШТА ГOСТЯ: " . $email . "\n\nПОВІДОМЛЕННЯ:\n" . $message_raw;
+    }
 
     try {
-        $sql = "INSERT INTO Support (customer_id, subject, message, submitted_date, status) VALUES (?, ?, ?, ?, 'new')";
+       
+        $sql = "INSERT INTO Support (user_id, subject, message, status) VALUES (?, ?, ?, 'new')";
         $stmt = $pdo->prepare($sql);
-        $stmt->execute([$customer_id, $subject, $message, $date]);
+        $stmt->execute([$user_id, $subject, $final_message]);
+        
         echo json_encode(['status' => 'success']);
     } catch (Exception $e) {
         echo json_encode(['status' => 'error', 'message' => $e->getMessage()]);
@@ -32,15 +46,30 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['message'])) {
 }
 
 
+$customer_name = '';
+$customer_email = '';
+if (isset($_SESSION['user_id'])) {
+    $stmt_user = $pdo->prepare("SELECT first_name, email FROM users WHERE user_id = ?");
+    $stmt_user->execute([$_SESSION['user_id']]);
+    $u_data = $stmt_user->fetch(PDO::FETCH_ASSOC);
+    if ($u_data) {
+        $customer_name = $u_data['first_name'];
+        $customer_email = $u_data['email'];
+    }
+}
+
 $wishlist_count = 0;
-if (isset($_SESSION['customer_id'])) {
-    $stmt = $pdo->prepare("SELECT COUNT(*) FROM Wishlist WHERE customer_id = ?");
-    $stmt->execute([$_SESSION['customer_id']]);
+if (isset($_SESSION['user_id'])) {
+
+    $stmt = $pdo->prepare("SELECT COUNT(*) FROM Wishlist WHERE user_id = ?");
+    $stmt->execute([$_SESSION['user_id']]);
     $wishlist_count = $stmt->fetchColumn();
 }
 $total_items = isset($_SESSION['cart']) ? array_sum($_SESSION['cart']) : 0;
 ?>
+
 <?php include 'includes/header.php'; ?>
+
 <!DOCTYPE html>
 <html lang="uk">
 <head>
@@ -51,7 +80,7 @@ $total_items = isset($_SESSION['cart']) ? array_sum($_SESSION['cart']) : 0;
     <style>
         :root {
             --primary: #1a1a1a;
-            --accent: #d4a373; 
+            --accent: #bc9c64; 
             --bg-light: #fdfaf9;
             --white: #ffffff;
             --border: #e8e8e8;
@@ -59,12 +88,6 @@ $total_items = isset($_SESSION['cart']) ? array_sum($_SESSION['cart']) : 0;
 
         * { box-sizing: border-box; margin: 0; padding: 0; font-family: 'Montserrat', sans-serif; }
         body { background-color: var(--bg-light); color: var(--primary); line-height: 1.6; }
-
-        nav a {
-            margin-left: 25px; text-decoration: none; color: var(--primary);
-            font-weight: 500; font-size: 0.8rem; text-transform: uppercase; letter-spacing: 1px;
-        }
-        nav a:hover { color: var(--accent); }
 
         .contact-hero {
             background: var(--white); padding: 120px 20px; text-align: center;
@@ -93,6 +116,14 @@ $total_items = isset($_SESSION['cart']) ? array_sum($_SESSION['cart']) : 0;
         }
         .form-panel h2 { font-family: 'Playfair Display', serif; font-size: 2.5rem; font-weight: 400; margin-bottom: 40px; font-style: italic; }
         
+     
+        .user-tag {
+            display: inline-block; padding: 6px 15px; font-size: 9px; font-weight: 700;
+            text-transform: uppercase; letter-spacing: 1px; border-radius: 20px; margin-bottom: 25px;
+        }
+        .tag-auth { background: #f0f7f0; color: #2ecc71; border: 1px solid #d4edda; }
+        .tag-guest { background: #f9f9f9; color: #999; border: 1px solid #eee; }
+
         .input-group { margin-bottom: 30px; position: relative; }
         .input-group label { font-size: 9px; text-transform: uppercase; letter-spacing: 2px; font-weight: 700; color: #bbb; display: block; margin-bottom: 10px; }
         
@@ -112,11 +143,6 @@ $total_items = isset($_SESSION['cart']) ? array_sum($_SESSION['cart']) : 0;
         #success-box { display: none; text-align: center; padding: 40px 0; }
         #success-box h3 { font-family: 'Playfair Display', serif; font-size: 2rem; color: var(--accent); margin-bottom: 20px; }
 
-        footer {
-            background: var(--primary); color: #fff; padding: 60px 50px; text-align: center;
-            font-size: 10px; letter-spacing: 3px; text-transform: uppercase; opacity: 0.8;
-        }
-
         @media (max-width: 992px) {
             .contact-grid { grid-template-columns: 1fr; }
             .contact-hero h1 { font-size: 2.5rem; }
@@ -125,8 +151,6 @@ $total_items = isset($_SESSION['cart']) ? array_sum($_SESSION['cart']) : 0;
     </style>
 </head>
 <body>
-
-
 
 <section class="contact-hero">
     <span class="badge-prive">Customer Care & Concierge</span>
@@ -145,7 +169,7 @@ $total_items = isset($_SESSION['cart']) ? array_sum($_SESSION['cart']) : 0;
             <div class="info-card">
                 <span>Email Support</span>
                 <h3>Напишіть нам</h3>
-                <p>prive-support@beautystore.ua<br>Відповідаємо протягом 2 годин.</p>
+                <p>care@beautystore.ua<br>Відповідаємо протягом 2 годин.</p>
             </div>
             <div class="info-card">
                 <span>Boutique Address</span>
@@ -156,15 +180,21 @@ $total_items = isset($_SESSION['cart']) ? array_sum($_SESSION['cart']) : 0;
 
         <div class="form-panel">
             <div id="form-content">
+                <?php if(isset($_SESSION['user_id'])): ?>
+                    <div class="user-tag tag-auth">● Ви авторизовані як Клієнт</div>
+                <?php else: ?>
+                    <div class="user-tag tag-guest">● Режим Гостя</div>
+                <?php endif; ?>
+
                 <h2>Надіслати запит</h2>
                 <form id="priveContactForm">
                     <div class="input-group">
                         <label>Ваше ім'я</label>
-                        <input type="text" name="customer_name" placeholder="Юлія Ковальчук" required>
+                        <input type="text" name="customer_name" value="<?php echo htmlspecialchars($customer_name); ?>" placeholder="Юлія Ковальчук" required>
                     </div>
                     <div class="input-group">
                         <label>Електронна адреса</label>
-                        <input type="email" name="customer_email" placeholder="example@gmail.com" required>
+                        <input type="email" name="customer_email" value="<?php echo htmlspecialchars($customer_email); ?>" placeholder="example@gmail.com" required>
                     </div>
                     <div class="input-group">
                         <label>Ваше повідомлення</label>
@@ -201,11 +231,11 @@ $total_items = isset($_SESSION['cart']) ? array_sum($_SESSION['cart']) : 0;
                 document.getElementById('form-content').style.display = 'none';
                 document.getElementById('success-box').style.display = 'block';
             } else {
-                alert('Помилка: ' + data.message);
+                alert('Помилка системи: ' + data.message);
             }
         })
         .catch(error => {
-            console.error('Error:', error);
+            console.error('Fetch Error:', error);
         });
     });
 </script>
