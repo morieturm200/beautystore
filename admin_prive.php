@@ -1,18 +1,20 @@
 <?php
-session_start();
+if (session_status() === PHP_SESSION_NONE) {
+    session_start();
+}
 error_reporting(E_ALL);
 ini_set('display_errors', 1);
 
-
 $host = "localhost"; $db = "beautystore"; $user = "beautyuser"; $pass = "1234";
 try {
-    $pdo = new PDO("mysql:host=$host;dbname=$db;charset=utf8", $user, $pass);
+    $pdo = new PDO("mysql:host=$host;dbname=$db;charset=utf8mb4", $user, $pass);
     $pdo->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
 } catch (Exception $e) { die("Помилка БД: " . $e->getMessage()); }
 
-
-if (!isset($_SESSION['is_prive_admin'])) { header("Location: ../login_register.php"); exit(); }
-
+if (!isset($_SESSION['role']) || $_SESSION['role'] !== 'admin') { 
+    header("Location: ../login_register.php"); 
+    exit(); 
+}
 
 $tab = $_GET['tab'] ?? 'dashboard';
 ?>
