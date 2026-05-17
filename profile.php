@@ -1,11 +1,10 @@
 <?php
-
 session_start();
 
 error_reporting(E_ALL);
 ini_set('display_errors', 1);
 
-if (!isset($_SESSION['customer_id'])) {
+if (!isset($_SESSION['user_id'])) {
     header("Location: login_register.php");
     exit();
 }
@@ -20,82 +19,163 @@ try {
     $pdo->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
     $pdo->setAttribute(PDO::ATTR_DEFAULT_FETCH_MODE, PDO::FETCH_ASSOC);
 
-    $current_user_id = $_SESSION['customer_id'];
+    $current_user_id = $_SESSION['user_id'];
 
- 
+   
     if (isset($_POST['cancel_order'])) {
         $o_id = intval($_POST['order_id']);
-        $cancel_sql = "UPDATE orders SET status = 'Скасовано' 
-                       WHERE order_id = ? AND customer_id = ? AND status = 'Нове'";
+    
+        $cancel_sql = "UPDATE orders SET status = 'cancelled' 
+                       WHERE order_id = ? AND user_id = ? AND status = 'accepted'";
         $stmt = $pdo->prepare($cancel_sql);
         $stmt->execute([$o_id, $current_user_id]);
-        $success_msg = "Замовлення №$o_id було успішно анульовано менеджером системи.";
+        $success_msg = "Замовлення №$o_id було успішно скасовано.";
     }
 
-    
+
     if (isset($_POST['update_profile'])) {
-        $update_sql = "UPDATE customer 
-                       SET first_name = ?, last_name = ?, phone_number = ?, address = ?, birthdate = ? 
-                       WHERE customer_id = ?";
-        $stmt = $pdo->prepare($update_sql);
+        $f_name = $_POST['first_name'] ?? '';
+        $l_name = $_POST['last_name'] ?? '';
+        $u_name = $_POST['customer_username'] ?? ''; 
+        $email  = $_POST['email'] ?? '';
+        $phone  = $_POST['phone_number'] ?? '';
         
-       
-        $stmt->execute([
-            $_POST['first_name'] ?? '', 
-            $_POST['last_name'] ?? '', 
-            $_POST['phone_number'] ?? '', 
-            $_POST['address'] ?? '', 
-            (!empty($_POST['birthdate']) ? $_POST['birthdate'] : null), 
-            $current_user_id
-        ]);
+        $region = $_POST['region'] ?? '';
+        $city   = $_POST['city'] ?? '';
+        $s_house = $_POST['street_house'] ?? '';
         
-        $_SESSION['customer_name'] = $_POST['first_name']; 
+        $gender = $_POST['gender'] ?? '';
+        $b_date = (!empty($_POST['birthdate']) ? $_POST['birthdate'] : null);
+        $new_pw = trim($_POST['customer_password'] ?? '');
+
+        if (!empty($new_pw)) {
+            $hashed_pw = password_hash($new_pw, PASSWORD_DEFAULT);
+            
+            $update_sql = "UPDATE users 
+                           SET first_name = ?, last_name = ?, username = ?, email = ?, 
+                               phone_number = ?, region = ?, city = ?, street_house = ?, 
+                               gender = ?, birthdate = ?, password = ? 
+                           WHERE user_id = ?";
+            $stmt = $pdo->prepare($update_sql);
+            $stmt->execute([$f_name, $l_name, $u_name, $email, $phone, $region, $city, $s_house, $gender, $b_date, $hashed_pw, $current_user_id]);
+        } else {
+            $update_sql = "UPDATE users 
+                           SET first_name = ?, last_name = ?, username = ?, email = ?, 
+                               phone_number = ?, region = ?, city = ?, street_house = ?, 
+                               gender = ?, birthdate = ? 
+                           WHERE user_id = ?";
+            $stmt = $pdo->prepare($update_sql);
+            $stmt->execute([$f_name, $l_name, $u_name, $email, $phone, $region, $city, $s_house, $gender, $b_date, $current_user_id]);
+        }
+        
+        $_SESSION['user_name'] = $f_name; 
         $success_msg = "Ваш профіль успішно синхронізовано з сервером BeautyStore.";
     }
 
-    
-    $stmt = $pdo->prepare("SELECT * FROM customer WHERE customer_id = ?");
+
+    $stmt = $pdo->prepare("SELECT * FROM users WHERE user_id = ?");
     $stmt->execute([$current_user_id]);
     $user_data = $stmt->fetch();
 
-    
+  
     $order_sql = "
         SELECT o.*,
         (SELECT GROUP_CONCAT(p.name SEPARATOR ' • ') 
          FROM Order_Details od 
          JOIN product p ON od.product_id = p.product_id 
-         WHERE od.order_id = o.order_id) as items_list
+         WHERE od.order_id = o.order_id AND od.status = 'ordered') as items_list,
+        (SELECT SUM(quantity * unit_price) 
+         FROM Order_Details 
+         WHERE order_id = o.order_id AND status = 'ordered') as order_total
         FROM orders o 
-        WHERE o.customer_id = ? 
+        WHERE o.user_id = ? 
+          AND o.invoice_no IS NOT NULL 
+          AND o.invoice_no != ''
+        HAVING order_total > 0
         ORDER BY o.order_date DESC";
     $order_stmt = $pdo->prepare($order_sql);
     $order_stmt->execute([$current_user_id]);
     $orders = $order_stmt->fetchAll();
 
-    
-    $total_spent = 0;
+
+    $total_earned_cashback = 0;
+    $total_spent_cashback = 0;
+    $total_delivered_sum = 0;
+
     foreach($orders as $ord) {
-        if($ord['status'] != 'Скасовано') {
-            $total_spent += $ord['total_price'];
+        if($ord['status'] === 'delivered') {
+            $actual_paid = $ord['order_total'] - floatval($ord['cashback_spent'] ?? 0);
+            if ($actual_paid > 0) {
+                $total_earned_cashback += ($actual_paid * 0.02);
+            }
+            $total_delivered_sum += $ord['order_total'];
+        }
+        if($ord['status'] !== 'cancelled') {
+            $total_spent_cashback += floatval($ord['cashback_spent'] ?? 0);
         }
     }
+    
+    $cashback_balance = $total_earned_cashback - $total_spent_cashback;
+    if ($cashback_balance < 0) $cashback_balance = 0;
 
-   
-    $cart_count_stmt = $pdo->prepare("SELECT SUM(quantity) as total FROM Cart WHERE customer_id = ?");
+    $current_discount_stmt = $pdo->prepare("SELECT discount FROM users WHERE user_id = ?");
+    $current_discount_stmt->execute([$current_user_id]);
+    $current_discount = floatval($current_discount_stmt->fetch()['discount'] ?? 0);
+
+    if (round($current_discount, 2) != round($cashback_balance, 2)) {
+        $sync_cashback = $pdo->prepare("UPDATE users SET discount = ? WHERE user_id = ?");
+        $sync_cashback->execute([$cashback_balance, $current_user_id]);
+    }
+
+
+    $cart_count_stmt = $pdo->prepare("
+        SELECT SUM(od.quantity) as total 
+        FROM Order_Details od
+        JOIN orders o ON od.order_id = o.order_id
+        WHERE o.user_id = ? AND od.status = 'cart'
+    ");
     $cart_count_stmt->execute([$current_user_id]);
     $cart_count = $cart_count_stmt->fetch()['total'] ?? 0;
 
-    $wish_count_stmt = $pdo->prepare("SELECT COUNT(*) as total FROM Wishlist WHERE customer_id = ?");
+    $wish_count_stmt = $pdo->prepare("SELECT COUNT(*) as total FROM Wishlist WHERE user_id = ?");
     $wish_count_stmt->execute([$current_user_id]);
     $wish_count = $wish_count_stmt->fetch()['total'] ?? 0;
 
+
+    $notifications = [];
+    $low_stock_stmt = $pdo->prepare("
+        SELECT p.name, p.stock FROM product p
+        WHERE p.stock < 5 AND p.stock > 0 AND (
+            p.product_id IN (SELECT product_id FROM Order_Details od JOIN orders o ON od.order_id = o.order_id WHERE o.user_id = ? AND od.status = 'cart')
+            OR 
+            p.product_id IN (SELECT product_id FROM Wishlist WHERE user_id = ?)
+        )
+    ");
+    $low_stock_stmt->execute([$current_user_id, $current_user_id]);
+    while($low = $low_stock_stmt->fetch()) {
+        $notifications[] = [
+            'type' => 'urgent',
+            'icon' => 'fa-fire-flame-curved',
+            'text' => "Поспішайте! <strong>" . htmlspecialchars($low['name']) . "</strong> майже закінчився (лише {$low['stock']} шт)."
+        ];
+    }
     
-    $support_stmt = $pdo->prepare("SELECT * FROM Support WHERE customer_id = ? ORDER BY submitted_date ASC");
+    if ($cashback_balance > 0) {
+        $notifications[] = [
+            'type' => 'promo',
+            'icon' => 'fa-coins',
+            'text' => "На вашому рахунку накопичено <strong>" . number_format($cashback_balance, 2, '.', '') . " ₴ бонусів</strong>. Використайте їх при наступному замовленні!"
+        ];
+    }
+    
+    $notif_count = count($notifications);
+
+    $support_stmt = $pdo->prepare("SELECT * FROM Support WHERE user_id = ? ORDER BY submitted_date ASC");
     $support_stmt->execute([$current_user_id]);
     $chat_history = $support_stmt->fetchAll();
 
 } catch (PDOException $e) {
-    die("<div style='padding:100px; text-align:center; background:#fff; color:#c5a059; font-family:Montserrat;'>CRITICAL DATA ERROR: Спроба відновлення зв'язку...</div>");
+    die("<div style='padding:100px; text-align:center; background:#fff; color:#c5a059; font-family:Montserrat;'>CRITICAL DATA ERROR: " . $e->getMessage() . "</div>");
 }
 ?>
 
@@ -110,7 +190,6 @@ try {
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css">
     
     <style>
-       
         :root {
             --prive-gold: #c5a059;
             --prive-gold-dark: #a6874a;
@@ -126,68 +205,10 @@ try {
             --transition: all 0.4s ease;
         }
 
-        
-        * { box-sizing: border-box; margin: 0; padding: 0; outline: none; }
         html { scroll-behavior: smooth; }
-        
-        body { 
-            background-color: var(--prive-white); 
-            color: var(--prive-black); 
-            font-family: var(--font-main); 
-            line-height: 1.7;
-            -webkit-font-smoothing: antialiased;
-        }
 
-     
-        nav.prive-nav {
-            background: var(--prive-white);
-            padding: 20px 100px;
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-            position: sticky; top: 0; z-index: 9999;
-            border-bottom: 1px solid var(--prive-gray-border);
-        }
-        .logo-text { 
-            font-family: var(--font-title); 
-            font-size: 1.8rem; 
-            color: var(--prive-black); 
-            text-decoration: none; 
-            letter-spacing: 4px; 
-            text-transform: uppercase;
-        }
-        .nav-right-side { display: flex; align-items: center; gap: 30px; }
-        .member-id { color: var(--prive-text-gray); font-size: 10px; font-weight: 700; letter-spacing: 2px; text-transform: uppercase; }
-        
-        
-        .btn-to-shop {
-            font-size: 10px;
-            font-weight: 700;
-            text-transform: uppercase;
-            letter-spacing: 2px;
-            color: var(--prive-gold);
-            text-decoration: none;
-            padding: 10px 20px;
-            border-right: 1px solid var(--prive-gray-border);
-            margin-right: 10px;
-            transition: var(--transition);
-        }
-        .btn-to-shop:hover { color: var(--prive-black); }
-
-        .btn-logout-prive { 
-            border: 1px solid var(--prive-black); 
-            color: var(--prive-black); 
-            padding: 10px 25px; 
-            text-decoration: none; 
-            font-size: 10px; font-weight: 800; 
-            text-transform: uppercase; 
-            transition: var(--transition);
-        }
-        .btn-logout-prive:hover { background: var(--prive-black); color: #fff; }
-
-   
-        header.cabinet-hero {
-            padding: 100px 20px 80px;
+        .cabinet-hero {
+            padding: 80px 20px 80px;
             text-align: center;
             background-color: var(--prive-gray-bg);
             border-bottom: 1px solid var(--prive-gray-border);
@@ -211,7 +232,6 @@ try {
         }
         .cabinet-hero p { max-width: 700px; margin: 0 auto; color: var(--prive-text-gray); font-size: 1rem; font-weight: 300; }
 
-       
         .tabs-header {
             display: flex;
             justify-content: center;
@@ -226,19 +246,48 @@ try {
             letter-spacing: 3px; color: #aaa; 
             padding: 15px 0;
             position: relative; transition: var(--transition);
+            font-family: var(--font-main);
         }
         .tab-item.active { color: var(--prive-black); }
         .tab-item.active::after {
             content: ""; position: absolute; bottom: 0; left: 0; width: 100%; height: 2px; background: var(--prive-gold);
         }
 
-       
+        .notif-dot {
+            position: absolute;
+            top: 15px;
+            right: -12px;
+            width: 7px;
+            height: 7px;
+            background-color: #e74c3c;
+            border-radius: 50%;
+            box-shadow: 0 0 10px rgba(231, 76, 60, 0.4);
+            display: <?= ($notif_count > 0) ? 'block' : 'none' ?>;
+        }
+
         .master-wrapper { max-width: 1400px; margin: 60px auto; padding: 0 60px 150px; }
         .tab-pane { display: none; }
         .tab-pane.active { display: block; animation: contentFadeIn 0.6s ease; }
         @keyframes contentFadeIn { from { opacity: 0; } to { opacity: 1; } }
 
-     
+        .insight-feed { margin-bottom: 40px; display: flex; flex-direction: column; gap: 12px; }
+        .insight-card {
+            background: #fff;
+            padding: 20px 30px;
+            border-left: 3px solid var(--prive-gold);
+            display: flex;
+            align-items: center;
+            gap: 25px;
+            font-size: 14px;
+            box-shadow: 0 5px 20px rgba(0,0,0,0.02);
+            border: 1px solid var(--prive-gray-border);
+            border-radius: 4px;
+        }
+        .insight-card.urgent { border-left-color: #e74c3c; background: #fffafb; }
+        .insight-card.promo { border-left-color: var(--prive-gold); }
+        .insight-card i { font-size: 18px; color: var(--prive-gold); width: 25px; text-align: center; }
+        .insight-card.urgent i { color: #e74c3c; }
+
         .stats-grid-box { display: grid; grid-template-columns: repeat(4, 1fr); gap: 30px; margin-bottom: 60px; }
         .stat-card-supreme { 
             background: var(--prive-white); 
@@ -263,23 +312,24 @@ try {
         .loyalty-banner h2 { font-family: var(--font-title); color: var(--prive-black); font-size: 2.5rem; margin-bottom: 20px; font-weight: 400; }
         .loyalty-banner p { max-width: 700px; margin: 0 auto; font-weight: 400; font-size: 1.1rem; color: #5a5a5a; }
 
-        
         .account-layout { display: grid; grid-template-columns: 1fr 1fr; gap: 50px; }
         .card-prive-form { background: #fff; padding: 60px; border: 1px solid var(--prive-gray-border); }
         .card-prive-form h2 { font-family: var(--font-title); font-size: 2.2rem; margin-bottom: 40px; font-weight: 400; }
 
         .luxe-input-box { margin-bottom: 35px; }
         .luxe-input-box label { display: block; font-size: 9px; font-weight: 800; text-transform: uppercase; color: var(--prive-gold); letter-spacing: 3px; margin-bottom: 10px; }
-        .luxe-input-box input { 
+        .luxe-input-box input, .luxe-input-box select { 
             width: 100%; padding: 15px 0; border: none; border-bottom: 1px solid var(--prive-gray-border); 
             font-size: 16px; color: var(--prive-black); background: transparent; transition: var(--transition);
+            font-family: var(--font-main);
         }
-        .luxe-input-box input:focus { border-bottom-color: var(--prive-black); }
+        .luxe-input-box input:focus, .luxe-input-box select:focus { border-bottom-color: var(--prive-black); outline: none; }
         
         .btn-prive-master { 
             width: 100%; padding: 20px; background: var(--prive-black); color: #fff; 
             border: none; font-size: 12px; font-weight: 700; 
             text-transform: uppercase; letter-spacing: 5px; cursor: pointer; transition: var(--transition);
+            font-family: var(--font-main);
         }
         .btn-prive-master:hover { background: var(--prive-gold); }
 
@@ -307,9 +357,8 @@ try {
         .order-price-supreme { font-family: var(--font-title); font-size: 1.8rem; font-weight: 700; text-align: right; }
         .order-footer-links { margin-top: 15px; display: flex; gap: 20px; justify-content: flex-end; }
         .link-invoice-pdf { font-size: 10px; color: var(--prive-black); font-weight: 800; text-decoration: none; border-bottom: 1px solid var(--prive-black); }
-        .btn-cancel-royal { background: none; border: none; color: #aaa; font-size: 10px; font-weight: 700; cursor: pointer; text-transform: uppercase; }
+        .btn-cancel-royal { background: none; border: none; color: #aaa; font-size: 10px; font-weight: 700; cursor: pointer; text-transform: uppercase; font-family: var(--font-main); }
 
-      
         .bot-trigger-supreme {
             position: fixed; bottom: 40px; right: 40px; width: 85px; height: 85px;
             background: var(--prive-black); 
@@ -341,7 +390,7 @@ try {
         .msg-bubble-prive .ts { font-size: 8px; text-transform: uppercase; margin-top: 10px; display: block; opacity: 0.5; font-weight: 700; }
 
         .bot-foot-luxe { padding: 25px; background: #fff; border-top: 1px solid var(--prive-gray-border); display: flex; gap: 15px; align-items: center; }
-        .bot-foot-luxe input { flex: 1; background: var(--prive-gray-bg); border: 1px solid var(--prive-gray-border); padding: 15px 25px; border-radius: 30px; font-size: 14px; }
+        .bot-foot-luxe input { flex: 1; background: var(--prive-gray-bg); border: 1px solid var(--prive-gray-border); padding: 15px 25px; border-radius: 30px; font-size: 14px; font-family: var(--font-main); }
         .bot-foot-luxe input:focus { border-color: var(--prive-gold); outline: none; }
         .btn-send-royal { background: var(--prive-black); color: var(--prive-gold); width: 50px; height: 50px; border-radius: 50%; border: none; cursor: pointer; transition: 0.3s; }
         .btn-send-royal:hover { background: var(--prive-gold); color: var(--prive-black); }
@@ -355,7 +404,6 @@ try {
         @keyframes slideDownMaster { from { transform: translateY(-100%); } to { transform: translateY(0); } }
 
         @media (max-width: 1000px) {
-            nav.prive-nav { padding: 20px 40px; }
             .stats-grid-box { grid-template-columns: 1fr; }
             .account-layout { grid-template-columns: 1fr; }
             .order-royal-card { grid-template-columns: 1fr; text-align: center; }
@@ -366,6 +414,8 @@ try {
 </head>
 <body>
 
+<?php include 'includes/header.php'; ?>
+
 <?php if(isset($success_msg)): ?>
     <div id="masterAlert" class="master-alert">
         <i class="fa-solid fa-check" style="margin-right:15px; color:var(--prive-gold);"></i> <?= $success_msg ?>
@@ -373,26 +423,19 @@ try {
     <script>setTimeout(() => document.getElementById('masterAlert').style.display='none', 6000);</script>
 <?php endif; ?>
 
-<nav class="prive-nav">
-    <a href="index.php" class="logo-text">BEAUTYSTORE</a>
-    <div class="nav-right-side">
-        <a href="index.php" class="btn-to-shop">Назад до магазину</a>
-        <a href="wishlist.php" style="color:var(--prive-black); text-decoration:none; font-size:11px; font-weight:700; text-transform:uppercase; letter-spacing:1px;"><i class="fa-regular fa-heart"></i> Обране (<?= $wish_count ?>)</a>
-        <a href="cart.php" style="color:var(--prive-black); text-decoration:none; font-size:11px; font-weight:700; text-transform:uppercase; letter-spacing:1px;"><i class="fa-solid fa-bag-shopping"></i> Кошик (<?= $cart_count ?>)</a>
-        <span class="member-id">Privé ID: 00<?= $current_user_id ?></span>
-        <a href="logout.php" class="btn-logout-prive">Вийти</a>
-    </div>
-</nav>
-
-<header class="cabinet-hero">
+<div class="cabinet-hero">
     <span class="gold-label">Bienvenue au Club</span>
-    <h1>Привіт, <?= htmlspecialchars($user_data['first_name']) ?></h1>
-    <p>Ваш персональний простір краси. Управляйте замовленнями та налаштуваннями профілю в атмосфері абсолютного спокою.</p>
-</header>
+    <h1>Привіт, <?= htmlspecialchars($user_data['first_name'] ?? 'Гість') ?></h1>
+    <p>Ваш персональний простір краси. Управляйте замовленнями та налаштуваннями профілю.</p>
+</div>
 
 <div class="tabs-header">
     <button class="tab-item active" onclick="triggerPane(event, 'pane-dashboard')">Огляд</button>
     <button class="tab-item" onclick="triggerPane(event, 'pane-orders')">Замовлення (<?= count($orders) ?>)</button>
+    <button class="tab-item" onclick="triggerPane(event, 'pane-insights')">
+        Сповіщення
+        <span class="notif-dot" id="global-notif-dot"></span>
+    </button>
     <button class="tab-item" onclick="triggerPane(event, 'pane-profile')">Налаштування</button>
 </div>
 
@@ -401,8 +444,8 @@ try {
     <div id="pane-dashboard" class="tab-pane active">
         <div class="stats-grid-box">
             <div class="stat-card-supreme">
-                <h3>Витрачено разом</h3>
-                <div class="stat-val"><?= number_format($total_spent, 0, '.', ' ') ?> ₴</div>
+                <h3>Доставлено (Сума)</h3>
+                <div class="stat-val"><?= number_format($total_delivered_sum, 0, '.', ' ') ?> ₴</div>
             </div>
             <a href="cart.php" class="stat-card-supreme">
                 <h3>Товарів у кошику</h3>
@@ -412,15 +455,37 @@ try {
                 <h3>Список бажань</h3>
                 <div class="stat-val"><?= $wish_count ?></div>
             </a>
+            
             <div class="stat-card-supreme">
-                <h3>Ваш статус</h3>
-                <div class="stat-val" style="color:var(--prive-gold);">GOLD</div>
+                <h3>Ваш кешбек</h3>
+                <div class="stat-val" style="color:var(--prive-gold);"><?= number_format($cashback_balance, 0, '.', ' ') ?> ₴</div>
             </div>
         </div>
         
         <div class="loyalty-banner">
-            <h2>Персональний Консьєрж</h2>
-            <p>Ми завжди на зв'язку, щоб зробити ваш досвід ідеальним. Якщо у вас виникли запитання щодо продукції або доставки — наш бот та менеджери допоможуть миттєво. Скористайтесь іконкою в куті екрана.</p>
+            <h2>BeautyStore Cashback</h2>
+            <p>Тепер кешбек нараховується автоматично. Використайте бонуси для оплати нових покупок!</p>
+        </div>
+    </div>
+
+    <div id="pane-insights" class="tab-pane">
+        <div style="max-width: 850px; margin: 0 auto;">
+            <h2 style="font-family: var(--font-title); font-size: 3rem; margin-bottom: 40px; text-align: center; font-style: italic;">Privé Insights</h2>
+            <?php if(empty($notifications)): ?>
+                <div style="text-align: center; padding: 100px 0; color: #ccc;">
+                    <i class="fa-regular fa-bell-slash" style="font-size: 3rem; margin-bottom: 20px; display: block;"></i>
+                    <p>Наразі нових сповіщень немає.</p>
+                </div>
+            <?php else: ?>
+                <div class="insight-feed">
+                    <?php foreach($notifications as $n): ?>
+                        <div class="insight-card <?= $n['type'] ?>">
+                            <i class="fa-solid <?= $n['icon'] ?>"></i>
+                            <span><?= $n['text'] ?></span>
+                        </div>
+                    <?php endforeach; ?>
+                </div>
+            <?php endif; ?>
         </div>
     </div>
 
@@ -428,28 +493,40 @@ try {
         <div style="max-width: 1000px; margin: 0 auto;">
             <?php if(empty($orders)): ?>
                 <div style="text-align: center; padding: 100px 0;">
-                    <p style="color: #bbb; font-style: italic;">У вас поки немає замовлень.</p>
+                    <p style="color: #bbb; font-style: italic;">У вас поки немає замовлений.</p>
                 </div>
             <?php else: ?>
                 <?php foreach($orders as $order): 
-                    $is_void = ($order['status'] == 'Скасовано');
+                    $is_void = ($order['status'] == 'cancelled');
                 ?>
                     <div class="order-royal-card <?= $is_void ? 'is-void' : '' ?>">
                         <div>
                             <span class="order-id-label">№ <?= $order['order_id'] ?></span><br>
-                            <span class="order-status-pill"><?= $order['status'] ?></span>
+                            
+                            <?php 
+                                $status_map_user = [
+                                    'accepted'   => ['label' => 'Прийнято',    'style' => 'border-color: #3498db; color: #3498db;'],
+                                    'processing' => ['label' => 'В обробці',   'style' => 'border-color: #f39c12; color: #f39c12;'],
+                                    'shipped'    => ['label' => 'Відправлено', 'style' => 'border-color: #9b59b6; color: #9b59b6;'],
+                                    'delivered'  => ['label' => 'Доставлено',  'style' => 'border-color: #2ecc71; color: #2ecc71;'],
+                                    'cancelled'  => ['label' => 'Скасовано',   'style' => 'border-color: #e74c3c; color: #e74c3c;'],
+                                ];
+                                $lbl = $status_map_user[$order['status']]['label'] ?? $order['status'];
+                                $stl = $status_map_user[$order['status']]['style'] ?? '';
+                            ?>
+                            <span class="order-status-pill" style="<?= $stl ?>"><?= $lbl ?></span>
                         </div>
                         
                         <div class="items-cloud">
-                            <?= htmlspecialchars($order['items_list'] ?? 'Дані завантажуються...') ?><br>
+                            <?= htmlspecialchars($order['items_list'] ?? 'Парфумерія та догляд') ?><br>
                             <small style="font-style: normal; color: #ccc;"><?= date('d.m.Y H:i', strtotime($order['order_date'])) ?></small>
                         </div>
 
                         <div>
-                            <div class="order-price-supreme"><?= number_format($order['total_price'], 0, '.', ' ') ?> ₴</div>
+                            <div class="order-price-supreme"><?= number_format($order['order_total'] ?? 0, 0, '.', ' ') ?> ₴</div>
                             <div class="order-footer-links">
                                 <a href="invoice.php?order_id=<?= $order['order_id'] ?>" target="_blank" class="link-invoice-pdf">Інвойс</a>
-                                <?php if($order['status'] == 'Нове'): ?>
+                                <?php if($order['status'] == 'accepted'): ?>
                                     <form method="POST" onsubmit="return confirm('Скасувати замовлення?')">
                                         <input type="hidden" name="order_id" value="<?= $order['order_id'] ?>">
                                         <button type="submit" name="cancel_order" class="btn-cancel-royal">Скасувати</button>
@@ -469,20 +546,45 @@ try {
                 <h2>Профіль</h2>
                 <form method="POST" id="priveFormMaster">
                     <div class="luxe-input-box">
-                        <label>Ім'я</label>
-                        <input type="text" name="first_name" value="<?= htmlspecialchars($user_data['first_name'] ?? '') ?>" required>
+                        <label>Логін (Username)</label>
+                        <input type="text" name="customer_username" value="<?= htmlspecialchars($user_data['username'] ?? '') ?>" required>
+                    </div>
+                    <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 20px;">
+                        <div class="luxe-input-box">
+                            <label>Ім'я</label>
+                            <input type="text" name="first_name" value="<?= htmlspecialchars($user_data['first_name'] ?? '') ?>" required>
+                        </div>
+                        <div class="luxe-input-box">
+                            <label>Прізвище</label>
+                            <input type="text" name="last_name" value="<?= htmlspecialchars($user_data['last_name'] ?? '') ?>">
+                        </div>
                     </div>
                     <div class="luxe-input-box">
-                        <label>Прізвище</label>
-                        <input type="text" name="last_name" value="<?= htmlspecialchars($user_data['last_name'] ?? '') ?>">
+                        <label>Email</label>
+                        <input type="email" name="email" value="<?= htmlspecialchars($user_data['email'] ?? '') ?>" required>
                     </div>
                     <div class="luxe-input-box">
                         <label>Телефон</label>
                         <input type="text" name="phone_number" value="<?= htmlspecialchars($user_data['phone_number'] ?? '') ?>">
                     </div>
+                    <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 20px;">
+                        <div class="luxe-input-box">
+                            <label>Дата народження</label>
+                            <input type="date" name="birthdate" value="<?= $user_data['birthdate'] ?? '' ?>">
+                        </div>
+                        <div class="luxe-input-box">
+                            <label>Стать</label>
+                            <select name="gender">
+                                <option value="" disabled <?= empty($user_data['gender']) ? 'selected' : '' ?>>Оберіть...</option>
+                                <option value="Жіноча" <?= ($user_data['gender'] == 'Жіноча') ? 'selected' : '' ?>>Жіноча</option>
+                                <option value="Чоловіча" <?= ($user_data['gender'] == 'Чоловіча') ? 'selected' : '' ?>>Чоловіча</option>
+                                <option value="Інша" <?= ($user_data['gender'] == 'Інша') ? 'selected' : '' ?>>Інша</option>
+                            </select>
+                        </div>
+                    </div>
                     <div class="luxe-input-box">
-                        <label>Дата народження</label>
-                        <input type="date" name="birthdate" value="<?= $user_data['birthdate'] ?? '' ?>">
+                        <label>Змінити пароль</label>
+                        <input type="password" name="customer_password" placeholder="Новий пароль">
                     </div>
                     <button type="submit" name="update_profile" class="btn-prive-master">Зберегти дані</button>
                 </form>
@@ -491,11 +593,23 @@ try {
             <div class="logistic-card">
                 <h3>Доставка</h3>
                 <div class="luxe-input-box" style="margin-top:40px;">
-                    <label>Адреса доставки за замовчуванням</label>
-                    <input type="text" name="address" form="priveFormMaster" value="<?= htmlspecialchars($user_data['address'] ?? '') ?>" placeholder="Місто, відділення або вулиця">
+                    <label>Область</label>
+                    <select name="region" form="priveFormMaster">
+                        <option value="">Оберіть область...</option>
+                        <option value="Вінницька" <?= (($user_data['region'] ?? '') == 'Вінницька') ? 'selected' : '' ?>>Вінницька</option>
+                        <option value="Львівська" <?= (($user_data['region'] ?? '') == 'Львівська') ? 'selected' : '' ?>>Львівська</option>
+                        <option value="Київська" <?= (($user_data['region'] ?? '') == 'Київська') ? 'selected' : '' ?>>Київська</option>
+                        <option value="Одеська" <?= (($user_data['region'] ?? '') == 'Одеська') ? 'selected' : '' ?>>Одеська</option>
+                        <option value="м. Київ" <?= (($user_data['region'] ?? '') == 'м. Київ') ? 'selected' : '' ?>>м. Київ</option>
+                    </select>
                 </div>
-                <div style="margin-top: 60px; color: #999; font-size: 12px; border-top: 1px solid #eee; padding-top: 20px;">
-                    <p>Ця адреса буде використовуватися для автоматичного заповнення під час оформлення нових покупок.</p>
+                <div class="luxe-input-box">
+                    <label>Місто</label>
+                    <input type="text" name="city" form="priveFormMaster" value="<?= htmlspecialchars($user_data['city'] ?? '') ?>" placeholder="Ваше місто">
+                </div>
+                <div class="luxe-input-box">
+                    <label>Вулиця / № Відділення</label>
+                    <input type="text" name="street_house" form="priveFormMaster" value="<?= htmlspecialchars($user_data['street_house'] ?? '') ?>" placeholder="Кульпарківська 176">
                 </div>
             </div>
         </div>
@@ -525,10 +639,10 @@ try {
                 <span class="ts"><?= date('H:i', strtotime($m['submitted_date'])) ?></span>
             </div>
             
-            <?php if(!empty($m['admin_reply'])): ?>
+            <?php if(!empty($m['reply_text'])): ?>
                 <div class="msg-bubble-prive ai">
                     <strong>Support:</strong><br>
-                    <?= htmlspecialchars($m['admin_reply']) ?>
+                    <?= htmlspecialchars($m['reply_text']) ?>
                     <span class="ts">Офіційна відповідь</span>
                 </div>
             <?php endif; ?>
@@ -543,9 +657,7 @@ try {
     </div>
 </div>
 
-<footer style="text-align: center; padding: 100px; color: #ccc; font-size: 10px; letter-spacing: 4px; text-transform: uppercase;">
-    BeautyStore Privé &bull; 2026
-</footer>
+<?php include 'includes/footer.php'; ?>
 
 <script>
     function triggerPane(event, paneId) {
@@ -553,6 +665,11 @@ try {
         document.querySelectorAll('.tab-item').forEach(b => b.classList.remove('active'));
         document.getElementById(paneId).classList.add('active');
         event.currentTarget.classList.add('active');
+
+        if(paneId === 'pane-insights') {
+            const dot = document.getElementById('global-notif-dot');
+            if(dot) dot.style.display = 'none';
+        }
     }
 
     function toggleRoyalChat() {
@@ -587,7 +704,7 @@ try {
             setTimeout(() => {
                 const aiDiv = document.createElement('div');
                 aiDiv.className = 'msg-bubble-prive ai';
-                aiDiv.innerText = "Дякуємо! Наш менеджер надасть відповідь протягом декількох хвилин.";
+                aiDiv.innerText = "Дякуємо! Менеджер відповість найближчим часом.";
                 flow.appendChild(aiDiv);
                 flow.scrollTop = flow.scrollHeight;
             }, 1200);
