@@ -1,6 +1,8 @@
 <?php
 session_start();
-if (!isset($_SESSION['customer_id']) || empty($_POST['message'])) {
+
+
+if (!isset($_SESSION['user_id']) || empty($_POST['message'])) {
     exit('error');
 }
 
@@ -12,11 +14,12 @@ $pass = "1234";
 try {
     $pdo = new PDO("mysql:host=$host;dbname=$db;charset=utf8mb4", $user, $pass);
     
-    $c_id = intval($_SESSION['customer_id']);
+
+    $c_id = intval($_SESSION['user_id']);
     $msg = trim($_POST['message']);
     $subject = "Питання з кабінету"; 
 
-    $sql = "INSERT INTO Support (customer_id, subject, message, status) 
+    $sql = "INSERT INTO Support (user_id, subject, message, status) 
             VALUES (?, ?, ?, 'new')";
     
     $stmt = $pdo->prepare($sql);
