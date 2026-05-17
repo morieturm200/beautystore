@@ -3,7 +3,6 @@ session_start();
 error_reporting(E_ALL);
 ini_set('display_errors', 1);
 
-
 $conn = new mysqli("localhost", "beautyuser", "1234", "beautystore");
 if ($conn->connect_error) {
     die("Помилка підключення: " . $conn->connect_error);
@@ -13,36 +12,43 @@ $conn->set_charset("utf8mb4");
 $order_id = isset($_GET['order_id']) ? intval($_GET['order_id']) : 0;
 
 
-$sql = "SELECT o.*, c.first_name, c.last_name, c.email, c.address, c.phone_number 
+$sql = "SELECT o.*, u.first_name, u.last_name, u.email,
+        (SELECT SUM(quantity * unit_price) FROM Order_Details WHERE order_id = o.order_id) as total_price
         FROM orders o 
-        JOIN customer c ON o.customer_id = c.customer_id 
+        JOIN users u ON o.user_id = u.user_id 
         WHERE o.order_id = $order_id";
+
 $res = $conn->query($sql);
 $order = $res->fetch_assoc();
 
 if (!$order) die("Замовлення не знайдено");
 
-
 $is_admin = (isset($_SESSION['admin_logged_in']) && $_SESSION['admin_logged_in'] === true) || 
              (isset($_SESSION['is_prive_admin']) && $_SESSION['is_prive_admin'] === true) ||
              (isset($_SESSION['user_role']) && $_SESSION['user_role'] === 'admin');
 
-$customer_id = $_SESSION['customer_id'] ?? null;
-$is_owner = ($customer_id && $order['customer_id'] == $customer_id);
+$user_id = $_SESSION['user_id'] ?? null;
+$is_owner = ($user_id && $order['user_id'] == $user_id);
 
 if (!$is_admin && !$is_owner) {
     die("<div style='font-family:sans-serif; text-align:center; padding:50px;'>
             <h2>Доступ обмежено</h2>
-            <p>Будь ласка, авторизуйтесь як адміністратор.</p>
-            <a href='admin/admin_login.php'>Перейти до логіну</a>
+            <p>Будь ласка, авторизуйтесь у системі.</p>
+            <a href='login_register.php'>Перейти до логіну</a>
          </div>");
 }
 
 $items_sql = "SELECT od.*, p.name, p.manufacturer 
               FROM Order_Details od 
               JOIN product p ON od.product_id = p.product_id 
-              WHERE od.order_id = $order_id";
+              WHERE od.order_id = $order_id AND od.status = 'ordered'";
 $items_res = $conn->query($items_sql);
+
+// Підрахунок кешбеку та фінальної суми
+$cashback_spent = floatval($order['cashback_spent'] ?? 0);
+$goods_total    = floatval($order['total_price'] ?? 0);
+$delivery_price = 200;
+$paid_by_money  = max(0, ($goods_total + $delivery_price) - $cashback_spent);
 ?>
 
 <!DOCTYPE html>
@@ -70,20 +76,7 @@ $items_res = $conn->query($items_sql);
             padding: 60px;
             position: relative;
             box-shadow: 0 20px 50px rgba(0,0,0,0.1);
-            overflow: hidden;
-        }
-
-        .invoice-wrapper::before {
-            content: 'PRIVÉ';
-            position: absolute;
-            top: 50%;
-            left: 50%;
-            transform: translate(-50%, -50%) rotate(-45deg);
-            font-family: 'Playfair Display', serif;
-            font-size: 12rem;
-            color: rgba(0,0,0,0.02);
-            pointer-events: none;
-            z-index: 0;
+            z-index: 1;
         }
 
         .header {
@@ -93,8 +86,6 @@ $items_res = $conn->query($items_sql);
             border-bottom: 1px solid #eee;
             padding-bottom: 40px;
             margin-bottom: 40px;
-            position: relative;
-            z-index: 1;
         }
 
         .brand-identity h1 {
@@ -120,15 +111,12 @@ $items_res = $conn->query($items_sql);
             margin: 0;
             font-weight: 400;
         }
-        .invoice-details p { margin: 5px 0; font-size: 0.85rem; }
 
         .client-grid {
             display: grid;
             grid-template-columns: 1fr 1fr;
             gap: 50px;
             margin-bottom: 60px;
-            position: relative;
-            z-index: 1;
         }
 
         .info-block h3 {
@@ -140,10 +128,10 @@ $items_res = $conn->query($items_sql);
             display: inline-block;
             margin-bottom: 15px;
         }
-        .info-block p { font-size: 0.9rem; margin: 0; font-weight: 400; }
+        .info-block p { font-size: 0.9rem; margin: 0; }
         .info-block strong { display: block; margin-bottom: 5px; font-size: 1.1rem; }
 
-        table { width: 100%; border-collapse: collapse; position: relative; z-index: 1; margin-bottom: 30px;}
+        table { width: 100%; border-collapse: collapse; margin-bottom: 30px;}
         thead th {
             text-align: left;
             font-size: 0.7rem;
@@ -152,7 +140,7 @@ $items_res = $conn->query($items_sql);
             padding: 15px 0;
             border-bottom: 2px solid var(--black);
         }
-        tbody td { padding: 25px 0; border-bottom: 1px solid #f2f2f2; }
+        tbody td { padding: 20px 0; border-bottom: 1px solid #f2f2f2; }
 
         .prod-name { font-weight: 600; font-size: 0.95rem; display: block; }
         .prod-brand { 
@@ -167,17 +155,33 @@ $items_res = $conn->query($items_sql);
             display: flex;
             justify-content: space-between;
             align-items: flex-end;
-            position: relative;
-            z-index: 1;
         }
-        .totals-table { width: 250px; }
-        .total-row { display: flex; justify-content: space-between; padding: 10px 0; font-size: 0.9rem; }
+        .totals-table { width: 300px; }
+        .total-row { 
+            display: flex; 
+            justify-content: space-between; 
+            padding: 10px 0; 
+            font-size: 0.9rem; 
+            border-bottom: 1px solid #f2f2f2;
+        }
+        .total-row:last-child { border-bottom: none; }
+        .total-row.cashback-row {
+            color: var(--gold);
+            font-weight: 600;
+        }
         .total-row.grand-total {
-            border-top: 1px solid #000;
-            margin-top: 15px;
+            border-top: 2px solid #000;
+            border-bottom: none;
+            margin-top: 10px;
             padding-top: 15px;
             font-weight: 700;
             font-size: 1.2rem;
+        }
+        .total-row.paid-row {
+            font-size: 0.8rem;
+            color: var(--text-muted);
+            border-bottom: none;
+            padding-top: 5px;
         }
 
         .footer {
@@ -185,9 +189,6 @@ $items_res = $conn->query($items_sql);
             text-align: center;
             font-size: 0.7rem;
             color: var(--text-muted);
-            letter-spacing: 1px;
-            position: relative;
-            z-index: 1;
         }
 
         .btn-container {
@@ -207,14 +208,12 @@ $items_res = $conn->query($items_sql);
             font-weight: 700;
             letter-spacing: 2px;
             cursor: pointer;
-            transition: 0.3s;
         }
-        .print-btn:hover { background: var(--gold); }
 
         @media print {
             body { background: #fff; padding: 0; }
             .invoice-wrapper { box-shadow: none; max-width: 100%; padding: 40px; }
-            .btn-container, .print-btn { display: none; }
+            .btn-container { display: none; }
         }
     </style>
 </head>
@@ -232,7 +231,7 @@ $items_res = $conn->query($items_sql);
             </div>
             <div class="invoice-details">
                 <h2>Invoice</h2>
-                <p><strong>№ <?php echo date('Y'); ?>-<?php echo str_pad($order_id, 5, '0', STR_PAD_LEFT); ?></strong></p>
+                <p><strong>№ <?php echo htmlspecialchars($order['invoice_no'] ? $order['invoice_no'] : 'INV-'.str_pad($order_id, 5, '0', STR_PAD_LEFT)); ?></strong></p>
                 <p><?php echo date('d.m.Y', strtotime($order['order_date'])); ?></p>
             </div>
         </div>
@@ -246,9 +245,13 @@ $items_res = $conn->query($items_sql);
             <div class="info-block">
                 <h3>Отримувач</h3>
                 <strong><?php echo htmlspecialchars($order['first_name'] . ' ' . $order['last_name']); ?></strong>
-                <p><?php echo htmlspecialchars($order['address']); ?><br>
-                Тел: <?php echo htmlspecialchars($order['phone_number']); ?><br>
-                Email: <?php echo htmlspecialchars($order['email']); ?></p>
+                <p>
+                    Область: <?php echo htmlspecialchars($order['delivery_region'] ?? 'Не вказано'); ?><br>
+                    Місто: <?php echo htmlspecialchars($order['delivery_city'] ?? 'Не вказано'); ?><br>
+                    Адреса: <?php echo htmlspecialchars($order['delivery_street'] ?? 'Не вказано'); ?><br>
+                    Тел: <?php echo htmlspecialchars($order['delivery_phone'] ?? 'Не вказано'); ?><br>
+                    Email: <?php echo htmlspecialchars($order['email']); ?>
+                </p>
             </div>
         </div>
 
@@ -263,8 +266,7 @@ $items_res = $conn->query($items_sql);
             </thead>
             <tbody>
                 <?php while($item = $items_res->fetch_assoc()): 
-                   
-                    $price = $item['price'] ?? $item['unit_price'] ?? 0;
+                    $price = $item['unit_price'] ?? 0;
                 ?>
                 <tr>
                     <td>
@@ -286,19 +288,39 @@ $items_res = $conn->query($items_sql);
                     <text x="50%" y="50%" dominant-baseline="middle" text-anchor="middle" font-size="10" fill="#999">QR AUTH</text>
                 </svg>
             </div>
+
             <div class="totals-table">
                 <div class="total-row">
-                    <span>Підсумок:</span>
-                    <span><?php echo number_format($order['total_price'], 0, '.', ' '); ?> ₴</span>
+                    <span>Товари:</span>
+                    <span><?php echo number_format($goods_total, 0, '.', ' '); ?> ₴</span>
                 </div>
                 <div class="total-row">
-                    <span>ПДВ (0%):</span>
-                    <span>0 ₴</span>
+                    <span>Доставка:</span>
+                    <span><?php echo number_format($delivery_price, 0, '.', ' '); ?> ₴</span>
                 </div>
+
+                <?php if ($cashback_spent > 0): ?>
+                <div class="total-row cashback-row">
+                    <span>Бонуси (кешбек):</span>
+                    <span>− <?php echo number_format($cashback_spent, 0, '.', ' '); ?> ₴</span>
+                </div>
+                <?php endif; ?>
+
                 <div class="total-row grand-total">
-                    <span>ВСЬОГО:</span>
-                    <span><?php echo number_format($order['total_price'], 0, '.', ' '); ?> ₴</span>
+                    <span>ДО СПЛАТИ:</span>
+                    <span><?php echo number_format($paid_by_money, 0, '.', ' '); ?> ₴</span>
                 </div>
+
+                <?php if ($cashback_spent > 0): ?>
+                <div class="total-row paid-row">
+                    <span>Оплачено грошима:</span>
+                    <span><?php echo number_format($paid_by_money, 0, '.', ' '); ?> ₴</span>
+                </div>
+                <div class="total-row paid-row" style="color: var(--gold);">
+                    <span>Оплачено бонусами:</span>
+                    <span><?php echo number_format($cashback_spent, 0, '.', ' '); ?> ₴</span>
+                </div>
+                <?php endif; ?>
             </div>
         </div>
 
