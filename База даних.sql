@@ -30,7 +30,7 @@ CREATE TABLE `Images` (
   PRIMARY KEY (`image_id`),
   KEY `fk_images_product` (`product_id`),
   CONSTRAINT `fk_images_product` FOREIGN KEY (`product_id`) REFERENCES `product` (`product_id`) ON DELETE CASCADE
-) ENGINE=InnoDB AUTO_INCREMENT=161 DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
+) ENGINE=InnoDB AUTO_INCREMENT=272 DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
 /*!40101 SET character_set_client = @saved_cs_client */;
 
 --
@@ -51,8 +51,10 @@ CREATE TABLE `Order_Details` (
   KEY `fk_details_order` (`order_id`),
   KEY `fk_details_product` (`product_id`),
   CONSTRAINT `fk_details_order` FOREIGN KEY (`order_id`) REFERENCES `orders` (`order_id`) ON DELETE CASCADE,
-  CONSTRAINT `fk_details_product` FOREIGN KEY (`product_id`) REFERENCES `product` (`product_id`) ON DELETE CASCADE
-) ENGINE=InnoDB AUTO_INCREMENT=37 DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
+  CONSTRAINT `fk_details_product` FOREIGN KEY (`product_id`) REFERENCES `product` (`product_id`) ON DELETE CASCADE,
+  CONSTRAINT `chk_order_id_required` CHECK (((`status` = _utf8mb4'cart') or (`order_id` is not null))),
+  CONSTRAINT `chk_unit_price_required` CHECK (((`status` = _utf8mb4'cart') or (`unit_price` is not null)))
+) ENGINE=InnoDB AUTO_INCREMENT=124 DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
 /*!40101 SET character_set_client = @saved_cs_client */;
 
 --
@@ -65,8 +67,8 @@ DROP TABLE IF EXISTS `Reviews`;
 CREATE TABLE `Reviews` (
   `review_id` int NOT NULL AUTO_INCREMENT,
   `product_id` int NOT NULL,
-  `user_id` int DEFAULT NULL,
-  `rating` int NOT NULL,
+  `user_id` int NOT NULL,
+  `rating` tinyint unsigned NOT NULL,
   `comment` text,
   `review_date` datetime NOT NULL,
   `reply_text` text,
@@ -78,8 +80,9 @@ CREATE TABLE `Reviews` (
   CONSTRAINT `fk_reviews_moderator` FOREIGN KEY (`moderator_id`) REFERENCES `users` (`user_id`) ON DELETE SET NULL,
   CONSTRAINT `fk_reviews_product` FOREIGN KEY (`product_id`) REFERENCES `product` (`product_id`) ON DELETE CASCADE,
   CONSTRAINT `fk_reviews_user` FOREIGN KEY (`user_id`) REFERENCES `users` (`user_id`) ON DELETE CASCADE,
+  CONSTRAINT `chk_rating` CHECK ((`rating` between 1 and 5)),
   CONSTRAINT `Reviews_chk_1` CHECK ((`rating` between 1 and 5))
-) ENGINE=InnoDB AUTO_INCREMENT=8 DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
+) ENGINE=InnoDB AUTO_INCREMENT=28 DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
 /*!40101 SET character_set_client = @saved_cs_client */;
 
 --
@@ -103,7 +106,7 @@ CREATE TABLE `Support` (
   KEY `fk_support_staff` (`staff_id`),
   CONSTRAINT `fk_support_staff` FOREIGN KEY (`staff_id`) REFERENCES `users` (`user_id`) ON DELETE SET NULL,
   CONSTRAINT `fk_support_user` FOREIGN KEY (`user_id`) REFERENCES `users` (`user_id`) ON DELETE CASCADE
-) ENGINE=InnoDB AUTO_INCREMENT=14 DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
+) ENGINE=InnoDB AUTO_INCREMENT=24 DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
 /*!40101 SET character_set_client = @saved_cs_client */;
 
 --
@@ -115,7 +118,7 @@ DROP TABLE IF EXISTS `Wishlist`;
 /*!50503 SET character_set_client = utf8mb4 */;
 CREATE TABLE `Wishlist` (
   `wishlist_id` int NOT NULL AUTO_INCREMENT,
-  `user_id` int DEFAULT NULL,
+  `user_id` int NOT NULL,
   `product_id` int NOT NULL,
   `added_date` timestamp NULL DEFAULT CURRENT_TIMESTAMP,
   PRIMARY KEY (`wishlist_id`),
@@ -123,7 +126,7 @@ CREATE TABLE `Wishlist` (
   KEY `fk_wishlist_product` (`product_id`),
   CONSTRAINT `fk_wishlist_product` FOREIGN KEY (`product_id`) REFERENCES `product` (`product_id`) ON DELETE CASCADE,
   CONSTRAINT `fk_wishlist_user` FOREIGN KEY (`user_id`) REFERENCES `users` (`user_id`) ON DELETE CASCADE
-) ENGINE=InnoDB AUTO_INCREMENT=26 DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
+) ENGINE=InnoDB AUTO_INCREMENT=71 DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
 /*!40101 SET character_set_client = @saved_cs_client */;
 
 --
@@ -166,7 +169,7 @@ CREATE TABLE `characteristics` (
   PRIMARY KEY (`characteristic_id`),
   KEY `fk_char_product` (`product_id`),
   CONSTRAINT `fk_char_product` FOREIGN KEY (`product_id`) REFERENCES `product` (`product_id`) ON DELETE CASCADE
-) ENGINE=InnoDB AUTO_INCREMENT=257 DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
+) ENGINE=InnoDB AUTO_INCREMENT=486 DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
 /*!40101 SET character_set_client = @saved_cs_client */;
 
 --
@@ -182,13 +185,20 @@ CREATE TABLE `orders` (
   `user_id` int DEFAULT NULL,
   `admin_id` int DEFAULT NULL,
   `order_date` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP,
-  `status` varchar(50) DEFAULT 'Прийнято',
+  `status` enum('accepted','processing','shipped','delivered','cancelled') NOT NULL DEFAULT 'accepted',
+  `delivery_region` varchar(100) DEFAULT NULL,
+  `delivery_city` varchar(100) DEFAULT NULL,
+  `delivery_street` varchar(255) DEFAULT NULL,
+  `delivery_phone` varchar(20) DEFAULT NULL,
+  `payment_method` enum('cash','card','online') DEFAULT NULL,
+  `payment_status` enum('pending','paid','refunded') NOT NULL DEFAULT 'pending',
+  `cashback_spent` decimal(10,2) DEFAULT '0.00',
   PRIMARY KEY (`order_id`),
   KEY `fk_orders_user` (`user_id`),
   KEY `fk_orders_admin` (`admin_id`),
   CONSTRAINT `fk_orders_admin` FOREIGN KEY (`admin_id`) REFERENCES `users` (`user_id`) ON DELETE SET NULL,
   CONSTRAINT `fk_orders_user` FOREIGN KEY (`user_id`) REFERENCES `users` (`user_id`) ON DELETE CASCADE
-) ENGINE=InnoDB AUTO_INCREMENT=20 DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
+) ENGINE=InnoDB AUTO_INCREMENT=54 DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
 /*!40101 SET character_set_client = @saved_cs_client */;
 
 --
@@ -203,7 +213,6 @@ CREATE TABLE `product` (
   `name` varchar(100) COLLATE utf8mb4_unicode_ci NOT NULL,
   `category_id` int DEFAULT NULL,
   `price` decimal(10,2) NOT NULL,
-  `is_sale` tinyint(1) DEFAULT '0',
   `manufacturer` varchar(100) COLLATE utf8mb4_unicode_ci NOT NULL,
   `description` text COLLATE utf8mb4_unicode_ci NOT NULL,
   `stock` int NOT NULL,
@@ -219,9 +228,12 @@ CREATE TABLE `product` (
   KEY `fk_product_modifier` (`last_modified_by`),
   CONSTRAINT `fk_product_category` FOREIGN KEY (`category_id`) REFERENCES `categories` (`category_id`) ON DELETE SET NULL,
   CONSTRAINT `fk_product_modifier` FOREIGN KEY (`last_modified_by`) REFERENCES `users` (`user_id`) ON DELETE SET NULL,
+  CONSTRAINT `chk_old_price` CHECK (((`old_price` is null) or (`old_price` > `price`))),
+  CONSTRAINT `chk_price` CHECK ((`price` > 0)),
   CONSTRAINT `chk_price_positive` CHECK ((`price` >= 0)),
+  CONSTRAINT `chk_stock` CHECK ((`stock` >= 0)),
   CONSTRAINT `chk_stock_non_negative` CHECK ((`stock` >= 0))
-) ENGINE=InnoDB AUTO_INCREMENT=47 DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+) ENGINE=InnoDB AUTO_INCREMENT=97 DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 /*!40101 SET character_set_client = @saved_cs_client */;
 
 --
@@ -239,7 +251,7 @@ CREATE TABLE `users` (
   `first_name` varchar(50) COLLATE utf8mb4_unicode_ci DEFAULT NULL,
   `last_name` varchar(50) COLLATE utf8mb4_unicode_ci DEFAULT NULL,
   `role` enum('admin','customer') COLLATE utf8mb4_unicode_ci DEFAULT 'customer',
-  `discount` decimal(5,2) DEFAULT '0.00',
+  `discount` decimal(10,2) DEFAULT '0.00',
   `gender` varchar(20) COLLATE utf8mb4_unicode_ci DEFAULT NULL,
   `birthdate` date DEFAULT NULL,
   `phone_number` varchar(20) COLLATE utf8mb4_unicode_ci DEFAULT NULL,
@@ -250,7 +262,7 @@ CREATE TABLE `users` (
   PRIMARY KEY (`user_id`),
   UNIQUE KEY `username` (`username`),
   UNIQUE KEY `email` (`email`)
-) ENGINE=InnoDB AUTO_INCREMENT=25 DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+) ENGINE=InnoDB AUTO_INCREMENT=75 DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 /*!40101 SET character_set_client = @saved_cs_client */;
 /*!40103 SET TIME_ZONE=@OLD_TIME_ZONE */;
 
@@ -262,4 +274,4 @@ CREATE TABLE `users` (
 /*!40101 SET COLLATION_CONNECTION=@OLD_COLLATION_CONNECTION */;
 /*!40111 SET SQL_NOTES=@OLD_SQL_NOTES */;
 
--- Dump completed on 2026-05-03 19:21:37
+-- Dump completed on 2026-05-17 16:30:50
