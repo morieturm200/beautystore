@@ -1,8 +1,8 @@
+<?php session_start(); ?>
 <?php
 include 'includes/header.php'; 
 include 'includes/search_logic.php'; 
 
-// Ініціалізація змінних (на випадок, якщо вони не визначені в search_logic.php)
 $search_query = isset($search_query) ? $search_query : (isset($_GET['search']) ? $_GET['search'] : '');
 $search_where = isset($search_where) ? $search_where : '';
 
@@ -13,40 +13,42 @@ $min_price = (isset($_GET['min_price']) && $_GET['min_price'] !== '') ? (int)$_G
 $max_price = (isset($_GET['max_price']) && $_GET['max_price'] !== '') ? (int)$_GET['max_price'] : 50000;
 $sort = isset($_GET['sort']) ? $_GET['sort'] : 'newest';
 
-// Основний запит з визначенням фінальної ціни (final_price)
+
 $sql = "SELECT p.*, 
-        (CASE 
-            WHEN p.is_sale = 1 AND p.sale_price > 0 THEN p.sale_price 
-            ELSE p.price 
-        END) AS final_price,
+        p.price AS final_price,
+        c.name AS cat_name,
+        parent.name AS parent_cat_name,
         (SELECT i.image_url FROM Images i WHERE i.product_id = p.product_id ORDER BY i.is_primary DESC, i.image_id ASC LIMIT 1) as image_url
         FROM product p
+        LEFT JOIN categories c ON p.category_id = c.category_id
+        LEFT JOIN categories parent ON c.parent_id = parent.category_id
         WHERE 1=1";
 
 if (!empty($search_where)) {
     $sql .= " AND $search_where";
 }
 
-// Фільтрація за фінальною ціною
-$sql .= " AND (CASE WHEN p.is_sale = 1 AND p.sale_price > 0 THEN p.sale_price ELSE p.price END) BETWEEN $min_price AND $max_price";
+
+$sql .= " AND p.price BETWEEN $min_price AND $max_price";
+
 
 if ($cat_filter !== '') {
-    $sql .= " AND p.category = '" . $conn->real_escape_string($cat_filter) . "'";
+    $sql .= " AND (c.name = '" . $conn->real_escape_string($cat_filter) . "' OR parent.name = '" . $conn->real_escape_string($cat_filter) . "')";
 }
 if ($sub_filter !== '') {
-    $sql .= " AND p.subcategory = '" . $conn->real_escape_string($sub_filter) . "'";
+    $sql .= " AND c.name = '" . $conn->real_escape_string($sub_filter) . "'";
 }
 if ($brand_filter !== '') {
     $sql .= " AND p.manufacturer = '" . $conn->real_escape_string($brand_filter) . "'";
 }
 
-// Логіка сортування (використовуємо згенерований аліас final_price)
+
 switch ($sort) {
     case 'cheap': 
-        $sql .= " ORDER BY final_price ASC"; 
+        $sql .= " ORDER BY p.price ASC"; 
         break;
     case 'expensive': 
-        $sql .= " ORDER BY final_price DESC"; 
+        $sql .= " ORDER BY p.price DESC"; 
         break;
     case 'newest':
     default: 
@@ -60,9 +62,11 @@ if (!$result) {
 }
 
 $total_items = isset($_SESSION['cart']) ? array_sum($_SESSION['cart']) : 0; 
-if (isset($_SESSION['customer_id'])) {
-    $c_id = $_SESSION['customer_id'];
-    $wish_res = $conn->query("SELECT COUNT(*) as cnt FROM Wishlist WHERE customer_id = $c_id");
+
+// Замінено customer_id на user_id
+if (isset($_SESSION['user_id'])) {
+    $c_id = $_SESSION['user_id'];
+    $wish_res = $conn->query("SELECT COUNT(*) as cnt FROM Wishlist WHERE user_id = $c_id");
     $wishlist_count = $wish_res->fetch_assoc()['cnt'];
 } else {
     $wishlist_count = 0;
@@ -174,7 +178,8 @@ if (isset($_SESSION['customer_id'])) {
                 <ul class="cat-list">
                     <li><a href="catalog.php?search=<?php echo urlencode($search_query); ?>&sort=<?php echo urlencode($sort); ?>" class="<?php echo !$cat_filter ? 'active' : ''; ?>">Всі товари</a></li>
                     <?php 
-                    $cats = $conn->query("SELECT DISTINCT category FROM product WHERE category IS NOT NULL");
+
+                    $cats = $conn->query("SELECT name AS category FROM categories WHERE parent_id IS NULL ORDER BY name ASC");
                     while($c = $cats->fetch_assoc()): ?>
                         <li><a href="catalog.php?cat=<?php echo urlencode($c['category']); ?>&search=<?php echo urlencode($search_query); ?>&sort=<?php echo urlencode($sort); ?>" 
                                class="<?php echo $cat_filter == $c['category'] ? 'active' : ''; ?>">
@@ -189,7 +194,11 @@ if (isset($_SESSION['customer_id'])) {
                 <h4>Підкатегорії</h4>
                 <ul class="cat-list">
                     <?php 
-                    $subs = $conn->query("SELECT DISTINCT subcategory FROM product WHERE category='" . $conn->real_escape_string($cat_filter) . "'");
+
+                    $subs = $conn->query("SELECT child.name AS subcategory 
+                                          FROM categories child 
+                                          JOIN categories parent ON child.parent_id = parent.category_id 
+                                          WHERE parent.name='" . $conn->real_escape_string($cat_filter) . "' ORDER BY child.name ASC");
                     while($s = $subs->fetch_assoc()): if(!$s['subcategory']) continue; ?>
                         <li><a href="catalog.php?cat=<?php echo urlencode($cat_filter); ?>&sub=<?php echo urlencode($s['subcategory']); ?>&search=<?php echo urlencode($search_query); ?>&sort=<?php echo urlencode($sort); ?>"
                                class="<?php echo $sub_filter == $s['subcategory'] ? 'active' : ''; ?>">
@@ -205,8 +214,14 @@ if (isset($_SESSION['customer_id'])) {
                 <select name="brand" class="brand-select" onchange="this.form.submit()">
                     <option value="">Всі бренди</option>
                     <?php 
-                    $b_sql = "SELECT DISTINCT manufacturer FROM product WHERE manufacturer != ''";
-                    if($cat_filter) $b_sql .= " AND category='".$conn->real_escape_string($cat_filter)."'";
+
+                    $b_sql = "SELECT DISTINCT p.manufacturer FROM product p 
+                              LEFT JOIN categories c ON p.category_id = c.category_id 
+                              LEFT JOIN categories parent ON c.parent_id = parent.category_id 
+                              WHERE p.manufacturer != '' AND p.manufacturer IS NOT NULL";
+                    if($cat_filter) {
+                        $b_sql .= " AND (c.name='".$conn->real_escape_string($cat_filter)."' OR parent.name='".$conn->real_escape_string($cat_filter)."')";
+                    }
                     $brands = $conn->query($b_sql);
                     while($b = $brands->fetch_assoc()): ?>
                         <option value="<?php echo htmlspecialchars($b['manufacturer']); ?>" <?php echo $brand_filter == $b['manufacturer'] ? 'selected' : ''; ?>>
@@ -245,12 +260,14 @@ if (isset($_SESSION['customer_id'])) {
                 <?php while($row = $result->fetch_assoc()): 
                     $p_id = $row['product_id'];
                     $is_fav = false;
-                    if (isset($_SESSION['customer_id'])) {
-                        $c_id = $_SESSION['customer_id'];
-                        $check_fav = $conn->query("SELECT * FROM Wishlist WHERE customer_id = $c_id AND product_id = $p_id");
+                    if (isset($_SESSION['user_id'])) {
+                        $c_id = $_SESSION['user_id'];
+                        $check_fav = $conn->query("SELECT * FROM Wishlist WHERE user_id = $c_id AND product_id = $p_id");
                         $is_fav = ($check_fav && $check_fav->num_rows > 0);
                     }
-                    $has_sale = ($row['is_sale'] == 1 && $row['sale_price'] > 0);
+                    
+                    // Перевіряємо чи є реальна знижка
+                    $has_sale = ($row['is_sale'] == 1 || (!empty($row['old_price']) && $row['old_price'] > $row['price']));
                 ?>
                 <div class="card">
                     <?php if($has_sale): ?>
@@ -269,19 +286,20 @@ if (isset($_SESSION['customer_id'])) {
                         <div class="name"><?php echo htmlspecialchars($row['name']); ?></div>
                         
                         <div class="price-container">
-                            <?php if($has_sale): ?>
-                                <span class="price sale"><?php echo number_format($row['sale_price'], 0, '.', ' '); ?> ₴</span>
-                                <span class="price old"><?php echo number_format($row['price'], 0, '.', ' '); ?> ₴</span>
+                            <?php if($has_sale && !empty($row['old_price'])): ?>
+                                <span class="price sale"><?php echo number_format($row['price'], 0, '.', ' '); ?> ₴</span>
+                                <span class="price old"><?php echo number_format($row['old_price'], 0, '.', ' '); ?> ₴</span>
                             <?php else: ?>
                                 <span class="price"><?php echo number_format($row['price'], 0, '.', ' '); ?> ₴</span>
                             <?php endif; ?>
                         </div>
                     </div>
-                    <?php if(isset($_SESSION['customer_id'])): ?>
-                        <a href="cart_add.php?id=<?php echo $p_id; ?>" class="btn-buy">Додати в кошик</a>
-                    <?php else: ?>
-                        <a href="login_register.php" class="btn-buy">Увійдіть, щоб купити</a>
-                    <?php endif; ?>
+                    
+                    <?php if(isset($_SESSION['user_id'])): ?>
+    <button onclick="addToCart(event, <?php echo $p_id; ?>)" class="btn-buy" style="border:none; width:100%;">Додати в кошик</button>
+<?php else: ?>
+    <a href="login_register.php" class="btn-buy">Увійдіть, щоб купити</a>
+<?php endif; ?>
                 </div>
                 <?php endwhile; ?>
             <?php else: ?>
@@ -295,10 +313,6 @@ if (isset($_SESSION['customer_id'])) {
 
 <div id="wishlistToast">Додано в обране</div>
 
-<section class="newsletter">
-    <h2 style="font-family: 'Playfair Display', serif; font-size: 2.5rem; margin-bottom: 15px;">Отримайте -10% знижки</h2>
-    <p style="font-size: 0.9rem; margin-bottom: 30px; opacity: 0.7; letter-spacing: 1px;">ПРИЄДНУЙТЕСЬ ДО PRIVATE CLUB ТА ДІЗНАВАЙТЕСЬ ПРО АКЦІЇ ПЕРШИМИ</p>
-</section>
 
 <?php include 'includes/footer.php'; ?>
 
@@ -339,4 +353,45 @@ if (isset($_SESSION['customer_id'])) {
             console.error('Помилка виконання:', err);
         });
     }
+
+    function addToCart(event, productId) {
+        if(event) {
+            event.preventDefault();
+            event.stopPropagation();
+        }
+
+        if (!productId) {
+            alert("Помилка: Не вдалося визначити ID товару.");
+            return;
+        }
+
+        fetch('cart_add.php?id=' + productId + '&ajax=1')
+        .then(response => {
+            if (response.redirected) {
+                window.location.href = response.url;
+                return;
+            }
+            return response.text();
+        })
+        .then(data => {
+
+            const toast = document.getElementById('wishlistToast');
+toast.innerText = "ТОВАР ДОДАНО В КОШИК ✦";
+toast.classList.add('show');
+setTimeout(() => toast.classList.remove('show'), 2500);
+            
+
+            const cartLinks = document.querySelectorAll('nav a, header a');
+            cartLinks.forEach(link => {
+                if (link.textContent.toUpperCase().includes('КОШИК')) {
+                    let match = link.textContent.match(/\d+/);
+                    let current = match ? parseInt(match[0]) : 0;
+                    link.innerHTML = `<i class="fa-solid fa-bag-shopping"></i> Кошик (${current + 1})`;
+                }
+            });
+        })
+        .catch(err => console.error('Помилка кошика:', err));
+    }
 </script>
+</body>
+</html>
